@@ -37,6 +37,19 @@ def test_protected_route_requires_api_key(tmp_path: Path) -> None:
     assert response.status_code == 401
 
 
+def test_connection_validates_api_key(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        rejected = client.get("/api/v1/connection")
+        accepted = client.get(
+            "/api/v1/connection",
+            headers={"X-ClairDoc-Key": "test-secret"},
+        )
+
+    assert rejected.status_code == 401
+    assert accepted.status_code == 200
+    assert accepted.json() == {"status": "authenticated", "version": "0.1.0"}
+
+
 def test_missing_server_key_disables_protected_routes(tmp_path: Path) -> None:
     with make_client(tmp_path, api_key=None) as client:
         response = client.post("/api/v1/projects", json={"name": "Archives"})

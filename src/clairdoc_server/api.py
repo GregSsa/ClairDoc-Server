@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from . import __version__
-from .models import HealthResponse, JobStatus, OcrJob, Project, ProjectCreate
+from .models import ConnectionResponse, HealthResponse, JobStatus, OcrJob, Project, ProjectCreate
 from .security import require_api_key
 from .storage import LocalStorage, RecordNotFoundError
 
@@ -37,6 +37,11 @@ async def health(request: Request) -> HealthResponse:
 @protected.post("/projects", response_model=Project, status_code=status.HTTP_201_CREATED)
 async def create_project(request: Request, payload: ProjectCreate) -> Project:
     return _storage(request).create_project(payload)
+
+
+@protected.get("/connection", response_model=ConnectionResponse)
+async def verify_connection() -> ConnectionResponse:
+    return ConnectionResponse(status="authenticated", version=__version__)
 
 
 @protected.get("/projects/{project_id}", response_model=Project)
@@ -139,4 +144,3 @@ async def get_ocr_text(request: Request, job_id: UUID) -> PlainTextResponse:
 
 
 router.include_router(protected)
-

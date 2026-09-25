@@ -49,3 +49,7 @@ class HealthResponse(BaseModel):
     ocr_available: bool
     authentication_configured: bool
 
+
+class ConnectionResponse(BaseModel):
+    status: str
+    version: str

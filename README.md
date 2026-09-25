@@ -98,6 +98,7 @@ Le dossier `data` et le fichier `.env` sont exclus de Git.
 | Méthode | Route | Rôle |
 |---|---|---|
 | `GET` | `/api/v1/health` | État du serveur et disponibilité OCR |
+| `GET` | `/api/v1/connection` | Vérifier la clé et la connexion de l'application |
 | `POST` | `/api/v1/projects` | Créer un projet local |
 | `GET` | `/api/v1/projects/{id}` | Lire un projet |
 | `POST` | `/api/v1/ocr/jobs` | Envoyer un PDF et créer un travail |
@@ -113,4 +114,3 @@ uv run pytest
 ```
 
 Cette version constitue le socle OCR. L'indexation, les embeddings, la recherche sémantique et les appels LLM seront ajoutés dans des modules séparés afin de ne pas coupler le stockage documentaire au fournisseur d'IA.
-
