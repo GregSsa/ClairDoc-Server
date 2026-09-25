@@ -1,0 +1,69 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from . import __version__
+from .api import router
+from .assistant import AssistantService
+from .config import Settings
+from .index_jobs import IndexJobManager
+from .jobs import OcrJobManager
+from .logging_config import configure_logging
+from .middleware import LocalRateLimitMiddleware
+from .organization import OrganizationService
+from .rag import RagService
+from .storage import LocalStorage
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    resolved_settings = settings or Settings()
+    storage = LocalStorage(resolved_settings.data_dir)
+    jobs = OcrJobManager(storage, resolved_settings)
+    rag = RagService(storage, resolved_settings)
+    index_jobs = IndexJobManager(storage, rag, resolved_settings)
+    organization = OrganizationService(storage)
+    assistant = AssistantService(storage, rag)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        storage.initialize()
+        configure_logging(storage.logs_dir, resolved_settings.log_level)
+        app.state.settings = resolved_settings
+        app.state.storage = storage
+        app.state.jobs = jobs
+        app.state.rag = rag
+        app.state.index_jobs = index_jobs
+        app.state.organization = organization
+        app.state.assistant = assistant
+        await jobs.start()
+        await index_jobs.start()
+        try:
+            yield
+        finally:
+            await index_jobs.stop()
+            await jobs.stop()
+
+    app = FastAPI(
+        title="ClairDoc Server",
+        summary="OCR local et services documentaires de ClairDoc",
+        version=__version__,
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=resolved_settings.cors_origin_list,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        allow_headers=["Content-Type", "X-ClairDoc-Key"],
+    )
+    app.add_middleware(
+        LocalRateLimitMiddleware,
+        requests_per_minute=resolved_settings.api_requests_per_minute,
+    )
+    app.include_router(router)
+    return app
+
+
+app = create_app()
