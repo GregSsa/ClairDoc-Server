@@ -9,6 +9,7 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Cette premiè
 - stockage local en fichiers JSON, sans base de données ;
 - projets et travaux OCR persistants ;
 - file d'attente OCR avec reprise après redémarrage ;
+- paramètres OCR compatibles avec les versions distribuées par Ubuntu (`--skip-text`) ;
 - PDF OCRisé et texte sidecar téléchargeables ;
 - limites de taille, validation PDF et journaux locaux ;
 - traitement concurrent configurable, limité à un travail par défaut.

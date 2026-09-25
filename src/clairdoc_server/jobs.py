@@ -67,6 +67,24 @@ class OcrJobManager:
             return str(configured.resolve())
         return shutil.which(self.settings.ocr_command)
 
+    def _build_arguments(self, command: str, job_id: UUID) -> list[str]:
+        return [
+            command,
+            "--skip-text",
+            "--rotate-pages",
+            "--rotate-pages-threshold",
+            "2",
+            "--deskew",
+            "--oversample",
+            "300",
+            "--language",
+            self.settings.ocr_languages,
+            "--sidecar",
+            str(self.storage.text_path(job_id)),
+            str(self.storage.input_path(job_id)),
+            str(self.storage.output_path(job_id)),
+        ]
+
     async def _process(self, job_id: UUID) -> None:
         job = self.storage.get_job(job_id)
         command = self._resolve_command()
@@ -85,19 +103,7 @@ class OcrJobManager:
         self.storage.output_path(job_id).unlink(missing_ok=True)
         self.storage.text_path(job_id).unlink(missing_ok=True)
 
-        arguments = [
-            command,
-            "--mode",
-            "skip",
-            "--rotate-pages",
-            "--deskew",
-            "--language",
-            self.settings.ocr_languages,
-            "--sidecar",
-            str(self.storage.text_path(job_id)),
-            str(self.storage.input_path(job_id)),
-            str(self.storage.output_path(job_id)),
-        ]
+        arguments = self._build_arguments(command, job_id)
 
         process = await asyncio.create_subprocess_exec(
             *arguments,
