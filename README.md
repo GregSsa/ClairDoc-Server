@@ -15,21 +15,33 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Cette premiè
 
 ## Prérequis
 
+- Linux ou WSL2 avec Ubuntu 22.04 ou une version plus récente ;
 - [uv](https://docs.astral.sh/uv/) ;
 - OCRmyPDF et Tesseract installés sur la machine ;
 - les langues Tesseract `fra` et `eng` si la configuration par défaut est conservée.
 
-Sous Windows, OCRmyPDF nécessite également ses dépendances système. Vérifiez l'installation avec :
+Installation sous Ubuntu/WSL :
 
-```powershell
+```bash
+sudo apt update
+sudo apt install -y ocrmypdf tesseract-ocr-fra tesseract-ocr-eng
+
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source "$HOME/.local/bin/env"
+
 ocrmypdf --version
 tesseract --list-langs
 ```
 
 ## Démarrage
 
-```powershell
-Copy-Item .env.example .env
+```bash
+cp .env.example .env
+
+# Générez une clé différente pour chaque installation, puis placez-la
+# dans CLAIRDOC_API_KEY au sein du fichier .env.
+openssl rand -hex 32
+
 uv sync
 uv run clairdoc-server
 ```
@@ -40,18 +52,28 @@ L'API écoute par défaut uniquement sur `127.0.0.1:8787`. Pour permettre l'acc�
 - état public : `GET /api/v1/health`
 - en-tête protégé : `X-ClairDoc-Key: votre-cle`
 
+### Les deux clés n'ont pas le même rôle
+
+- `CLAIRDOC_API_KEY` est un secret local partagé entre l'application Tauri et ce serveur. Il empêche un autre appareil du réseau d'utiliser l'API ClairDoc. Ce n'est pas une clé OpenAI.
+- `OPENAI_API_KEY` sera la clé du compte OpenAI. Elle devra rester uniquement dans le fichier `.env` du serveur lorsque le module LLM sera implémenté. Elle ne doit jamais être placée dans l'application Tauri ni enregistrée dans Git.
+
+Pour cette première version, `OPENAI_API_KEY` n'est pas encore utilisée : le serveur ne fait que l'OCR local.
+
 Exemple d'envoi :
 
-```powershell
-$headers = @{ "X-ClairDoc-Key" = "votre-cle" }
-$project = Invoke-RestMethod -Method Post `
-  -Uri http://127.0.0.1:8787/api/v1/projects `
-  -Headers $headers `
-  -ContentType "application/json" `
-  -Body '{"name":"Archives familiales"}'
+```bash
+CLAIRDOC_KEY="remplacez-par-votre-cle"
 
-curl.exe -X POST "http://127.0.0.1:8787/api/v1/ocr/jobs?project_id=$($project.id)" `
-  -H "X-ClairDoc-Key: votre-cle" `
+PROJECT_ID=$(curl --silent --request POST \
+  http://127.0.0.1:8787/api/v1/projects \
+  --header "X-ClairDoc-Key: $CLAIRDOC_KEY" \
+  --header "Content-Type: application/json" \
+  --data '{"name":"Archives familiales"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+
+curl --request POST \
+  "http://127.0.0.1:8787/api/v1/ocr/jobs?project_id=$PROJECT_ID" \
+  -H "X-ClairDoc-Key: $CLAIRDOC_KEY" \
   -F "file=@document.pdf;type=application/pdf"
 ```
 
@@ -85,7 +107,7 @@ Le dossier `data` et le fichier `.env` sont exclus de Git.
 
 ## Qualité
 
-```powershell
+```bash
 uv run ruff check .
 uv run pytest
 ```
