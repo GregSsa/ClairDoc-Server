@@ -29,6 +29,7 @@ from .models import (
     ProjectOcrState,
     ProjectUpdate,
     RuntimeInfo,
+    RuntimeUpdate,
 )
 from .rag import NoDocumentsError, OpenAIConfigurationError, ProjectIndexNotFoundError
 from .security import require_api_key
@@ -36,6 +37,7 @@ from .storage import LocalStorage, RecordNotFoundError
 
 router = APIRouter(prefix="/api/v1")
 protected = APIRouter(dependencies=[Depends(require_api_key)])
+LLM_MODEL_OPTIONS = ["gpt-6-luna", "gpt-5.6-terra", "gpt-6-sol"]
 
 
 def _storage(request: Request) -> LocalStorage:
@@ -125,7 +127,7 @@ async def runtime_info(request: Request) -> RuntimeInfo:
     settings = request.app.state.settings
     return RuntimeInfo(
         version=__version__,
-        llm_model=settings.llm_model,
+        llm_model=_storage(request).get_llm_model(settings.llm_model),
         embedding_model=settings.embedding_model,
         embedding_dimensions=settings.embedding_dimensions,
         ocr_languages=settings.ocr_languages,
@@ -134,7 +136,16 @@ async def runtime_info(request: Request) -> RuntimeInfo:
         max_index_tokens=settings.max_index_tokens,
         openai_configured=bool(settings.openai_api_key),
         tls_enabled=bool(settings.tls_certfile and settings.tls_keyfile),
+        model_options=LLM_MODEL_OPTIONS,
     )
+
+
+@protected.patch("/runtime", response_model=RuntimeInfo)
+async def update_runtime(request: Request, payload: RuntimeUpdate) -> RuntimeInfo:
+    if payload.llm_model not in LLM_MODEL_OPTIONS:
+        raise HTTPException(status_code=422, detail="Ce modèle n'est pas proposé par ClairDoc.")
+    _storage(request).set_llm_model(payload.llm_model)
+    return await runtime_info(request)
 
 
 @protected.get("/projects/{project_id}/ocr/jobs", response_model=list[OcrJob])

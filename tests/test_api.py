@@ -125,6 +125,26 @@ def test_runtime_info_does_not_expose_secrets(tmp_path: Path) -> None:
     assert "api_key" not in response.json()
 
 
+def test_runtime_model_can_be_selected_and_persisted(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    with make_client(tmp_path) as client:
+        updated = client.patch(
+            "/api/v1/runtime",
+            headers=headers,
+            json={"llm_model": "gpt-5.6-terra"},
+        )
+        fetched = client.get("/api/v1/runtime", headers=headers)
+
+    assert updated.status_code == 200
+    assert fetched.json()["llm_model"] == "gpt-5.6-terra"
+    assert fetched.json()["model_options"] == [
+        "gpt-6-luna",
+        "gpt-5.6-terra",
+        "gpt-6-sol",
+    ]
+    assert (tmp_path / "data" / "runtime.json").is_file()
+
+
 def test_duplicate_pdf_is_reused_within_project(tmp_path: Path) -> None:
     headers = {"X-ClairDoc-Key": "test-secret"}
     pdf = b"%PDF-1.4\n%%EOF"

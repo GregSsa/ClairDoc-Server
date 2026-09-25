@@ -83,6 +83,11 @@ class RuntimeInfo(BaseModel):
     max_index_tokens: int
     openai_configured: bool
     tls_enabled: bool
+    model_options: list[str]
+
+
+class RuntimeUpdate(BaseModel):
+    llm_model: str
 
 
 class IndexResponse(BaseModel):

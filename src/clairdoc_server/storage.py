@@ -25,6 +25,7 @@ class LocalStorage:
         self.plans_dir = self.root / "plans"
         self.index_tasks_dir = self.root / "index-tasks"
         self.backups_dir = self.root / "backups"
+        self.runtime_path = self.root / "runtime.json"
 
     def initialize(self) -> None:
         for directory in (
@@ -243,6 +244,8 @@ class LocalStorage:
             schema_path = self.root / "schema.json"
             if schema_path.is_file():
                 archive.write(schema_path, schema_path.relative_to(self.root))
+            if self.runtime_path.is_file():
+                archive.write(self.runtime_path, self.runtime_path.relative_to(self.root))
             for directory in included_directories:
                 for path in directory.rglob("*"):
                     if path.is_file():
@@ -255,3 +258,16 @@ class LocalStorage:
                 if text.is_file():
                     archive.write(text, text.relative_to(self.root))
         return destination
+
+    def get_llm_model(self, default: str) -> str:
+        try:
+            value = self._read_json(self.runtime_path).get("llm_model")
+        except RecordNotFoundError:
+            return default
+        return str(value) if value else default
+
+    def set_llm_model(self, model: str) -> None:
+        self._write_json(
+            self.runtime_path,
+            {"llm_model": model, "updated_at": datetime.now(UTC).isoformat()},
+        )

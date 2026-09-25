@@ -449,7 +449,7 @@ class RagService:
                 f"[{number}] Document: {document['document_name']}{page}\n{chunk['text']}"
             )
         response = await client.responses.create(
-            model=self.settings.llm_model,
+            model=self.storage.get_llm_model(self.settings.llm_model),
             instructions=self._system_prompt(),
             input=f"Question de l'utilisateur :\n{question}\n\nExtraits :\n\n"
             + "\n\n".join(context_parts),
@@ -468,7 +468,7 @@ class RagService:
         return AskResponse(
             answer=response.output_text,
             citations=citations,
-            model=self.settings.llm_model,
+            model=self.storage.get_llm_model(self.settings.llm_model),
         )
 
 

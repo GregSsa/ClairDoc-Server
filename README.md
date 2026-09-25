@@ -29,6 +29,7 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Il exécute l
 - sauvegardes ZIP des métadonnées et version du schéma local ;
 - limitation locale du débit HTTP et TLS facultatif.
 - bibliothèque documentaire par projet avec catégories, métadonnées et relations calculées localement.
+- sélection persistante du modèle de réponse Luna, Terra ou Sol.
 
 ## Prérequis
 
@@ -132,6 +133,7 @@ Le dossier `data` et le fichier `.env` sont exclus de Git.
 | `GET` | `/api/v1/projects` | Lister les projets existants |
 | `GET` | `/api/v1/projects/{id}/documents` | Lister les documents, métadonnées et relations du projet |
 | `GET` | `/api/v1/runtime` | Lire les modèles et paramètres non secrets du serveur |
+| `PATCH` | `/api/v1/runtime` | Sélectionner le modèle de réponse autorisé |
 | `GET` | `/api/v1/projects/{id}/ocr/jobs` | Lister les travaux OCR d'un projet |
 | `POST` | `/api/v1/projects/{id}/ocr/pause` | Mettre la file du projet en pause |
 | `POST` | `/api/v1/projects/{id}/ocr/resume` | Reprendre la file du projet |
