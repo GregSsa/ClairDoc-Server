@@ -48,8 +48,36 @@ class HealthResponse(BaseModel):
     storage_ready: bool
     ocr_available: bool
     authentication_configured: bool
+    openai_configured: bool
 
 
 class ConnectionResponse(BaseModel):
     status: str
     version: str
+
+
+class IndexResponse(BaseModel):
+    project_id: UUID
+    documents_indexed: int
+    documents_reused: int
+    chunks_indexed: int
+    embedding_model: str
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=4000)
+    top_k: int | None = Field(default=None, ge=1, le=20)
+
+
+class Citation(BaseModel):
+    document_name: str
+    job_id: UUID
+    chunk_index: int
+    score: float
+    excerpt: str
+
+
+class AskResponse(BaseModel):
+    answer: str
+    citations: list[Citation]
+    model: str

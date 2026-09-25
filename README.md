@@ -1,6 +1,6 @@
 # ClairDoc Server
 
-Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Cette première version reçoit des PDF depuis l'application Tauri, les place dans une file d'attente et lance OCRmyPDF/Tesseract sans envoyer les documents vers un service externe.
+Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Il exécute l'OCR localement, conserve l'index documentaire sur disque et n'envoie à OpenAI que les extraits de texte nécessaires aux embeddings et aux réponses.
 
 ## Fonctionnalités actuelles
 
@@ -13,6 +13,9 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Cette premiè
 - PDF OCRisé et texte sidecar téléchargeables ;
 - limites de taille, validation PDF et journaux locaux ;
 - traitement concurrent configurable, limité à un travail par défaut.
+- extraction du texte des PDF OCRisés, découpage et embeddings OpenAI ;
+- index sémantique JSON local, avec réutilisation des documents inchangés ;
+- questions/réponses RAG avec extraits sources.
 
 ## Prérequis
 
@@ -56,9 +59,9 @@ L'API écoute par défaut uniquement sur `127.0.0.1:8787`. Pour permettre l'acc�
 ### Les deux clés n'ont pas le même rôle
 
 - `CLAIRDOC_API_KEY` est un secret local partagé entre l'application Tauri et ce serveur. Il empêche un autre appareil du réseau d'utiliser l'API ClairDoc. Ce n'est pas une clé OpenAI.
-- `OPENAI_API_KEY` sera la clé du compte OpenAI. Elle devra rester uniquement dans le fichier `.env` du serveur lorsque le module LLM sera implémenté. Elle ne doit jamais être placée dans l'application Tauri ni enregistrée dans Git.
+- `OPENAI_API_KEY` est la clé du compte OpenAI utilisée pour les embeddings et les réponses. Elle reste uniquement dans le fichier `.env` du serveur. Elle ne doit jamais être placée dans l'application Tauri ni enregistrée dans Git.
 
-Pour cette première version, `OPENAI_API_KEY` n'est pas encore utilisée : le serveur ne fait que l'OCR local.
+Par défaut, les embeddings utilisent `text-embedding-3-small` avec 512 dimensions et les réponses utilisent `gpt-6-luna`. Ces valeurs peuvent être changées dans `.env`.
 
 Exemple d'envoi :
 
@@ -89,6 +92,8 @@ data/
 ├── jobs/<id>/input.pdf
 ├── jobs/<id>/output.pdf
 ├── jobs/<id>/output.txt
+├── indexes/<projet-id>.json
+├── prompts/rag-system.txt
 └── logs/clairdoc-server.log
 ```
 
@@ -106,6 +111,8 @@ Le dossier `data` et le fichier `.env` sont exclus de Git.
 | `GET` | `/api/v1/ocr/jobs/{id}` | Lire l'état d'un travail |
 | `GET` | `/api/v1/ocr/jobs/{id}/document` | Télécharger le PDF OCRisé |
 | `GET` | `/api/v1/ocr/jobs/{id}/text` | Télécharger le texte extrait |
+| `POST` | `/api/v1/projects/{id}/index` | Créer ou actualiser l'index sémantique |
+| `POST` | `/api/v1/projects/{id}/ask` | Poser une question sur l'index du projet |
 
 ## Qualité
 
@@ -114,4 +121,4 @@ uv run ruff check .
 uv run pytest
 ```
 
-Cette version constitue le socle OCR. L'indexation, les embeddings, la recherche sémantique et les appels LLM seront ajoutés dans des modules séparés afin de ne pas coupler le stockage documentaire au fournisseur d'IA.
+Le prompt système est créé dans `data/prompts/rag-system.txt` au premier appel. Il peut être adapté sans modifier le code, puis sera repris lors des questions suivantes.

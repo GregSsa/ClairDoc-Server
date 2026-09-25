@@ -4,9 +4,21 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, PlainTextResponse
+from openai import OpenAIError
 
 from . import __version__
-from .models import ConnectionResponse, HealthResponse, JobStatus, OcrJob, Project, ProjectCreate
+from .models import (
+    AskRequest,
+    AskResponse,
+    ConnectionResponse,
+    HealthResponse,
+    IndexResponse,
+    JobStatus,
+    OcrJob,
+    Project,
+    ProjectCreate,
+)
+from .rag import NoDocumentsError, OpenAIConfigurationError, ProjectIndexNotFoundError
 from .security import require_api_key
 from .storage import LocalStorage, RecordNotFoundError
 
@@ -31,6 +43,7 @@ async def health(request: Request) -> HealthResponse:
         storage_ready=request.app.state.storage.root.is_dir(),
         ocr_available=request.app.state.jobs._resolve_command() is not None,
         authentication_configured=bool(settings.api_key),
+        openai_configured=bool(settings.openai_api_key),
     )
 
 
@@ -50,6 +63,42 @@ async def get_project(request: Request, project_id: UUID) -> Project:
         return _storage(request).get_project(project_id)
     except RecordNotFoundError as exc:
         raise _not_found("Projet") from exc
+
+
+def _rag_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, OpenAIConfigurationError):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, (NoDocumentsError, ProjectIndexNotFoundError)):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, OpenAIError):
+        return HTTPException(
+            status_code=502,
+            detail="Le service OpenAI n'a pas pu traiter la demande.",
+        )
+    return HTTPException(status_code=500, detail="Erreur d'indexation inattendue.")
+
+
+@protected.post("/projects/{project_id}/index", response_model=IndexResponse)
+async def index_project(request: Request, project_id: UUID) -> IndexResponse:
+    try:
+        return await request.app.state.rag.index_project(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+    except (OpenAIConfigurationError, NoDocumentsError, OpenAIError) as exc:
+        raise _rag_error(exc) from exc
+
+
+@protected.post("/projects/{project_id}/ask", response_model=AskResponse)
+async def ask_project(request: Request, project_id: UUID, payload: AskRequest) -> AskResponse:
+    try:
+        return await request.app.state.rag.ask(project_id, payload.question.strip(), payload.top_k)
+    except (
+        OpenAIConfigurationError,
+        NoDocumentsError,
+        ProjectIndexNotFoundError,
+        OpenAIError,
+    ) as exc:
+        raise _rag_error(exc) from exc
 
 
 @protected.post("/ocr/jobs", response_model=OcrJob, status_code=status.HTTP_202_ACCEPTED)

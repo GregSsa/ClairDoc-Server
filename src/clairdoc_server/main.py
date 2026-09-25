@@ -9,6 +9,7 @@ from .api import router
 from .config import Settings
 from .jobs import OcrJobManager
 from .logging_config import configure_logging
+from .rag import RagService
 from .storage import LocalStorage
 
 
@@ -16,6 +17,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or Settings()
     storage = LocalStorage(resolved_settings.data_dir)
     jobs = OcrJobManager(storage, resolved_settings)
+    rag = RagService(storage, resolved_settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -24,6 +26,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = resolved_settings
         app.state.storage = storage
         app.state.jobs = jobs
+        app.state.rag = rag
         await jobs.start()
         try:
             yield
@@ -48,4 +51,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 app = create_app()
-

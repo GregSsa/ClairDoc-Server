@@ -27,6 +27,7 @@ def test_health_reports_configuration(tmp_path: Path) -> None:
         "storage_ready": True,
         "ocr_available": False,
         "authentication_configured": True,
+        "openai_configured": False,
     }
 
 
@@ -72,6 +73,19 @@ def test_project_is_persisted_as_json(tmp_path: Path) -> None:
     assert fetched.status_code == 200
     assert fetched.json()["name"] == "Archives familiales"
     assert (tmp_path / "data" / "projects" / f"{project_id}.json").is_file()
+
+
+def test_index_requires_openai_key(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    with make_client(tmp_path) as client:
+        project = client.post("/api/v1/projects", headers=headers, json={"name": "Archives"})
+        response = client.post(
+            f"/api/v1/projects/{project.json()['id']}/index",
+            headers=headers,
+        )
+
+    assert response.status_code == 503
+    assert "OPENAI_API_KEY" in response.json()["detail"]
 
 
 def test_pdf_upload_is_queued_then_fails_without_ocrmypdf(tmp_path: Path) -> None:

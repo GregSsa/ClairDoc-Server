@@ -15,9 +15,17 @@ class LocalStorage:
         self.projects_dir = self.root / "projects"
         self.jobs_dir = self.root / "jobs"
         self.logs_dir = self.root / "logs"
+        self.indexes_dir = self.root / "indexes"
+        self.prompts_dir = self.root / "prompts"
 
     def initialize(self) -> None:
-        for directory in (self.projects_dir, self.jobs_dir, self.logs_dir):
+        for directory in (
+            self.projects_dir,
+            self.jobs_dir,
+            self.logs_dir,
+            self.indexes_dir,
+            self.prompts_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
@@ -88,3 +96,14 @@ class LocalStorage:
     def text_path(self, job_id: UUID) -> Path:
         return self.job_dir(job_id) / "output.txt"
 
+    def index_path(self, project_id: UUID) -> Path:
+        return self.indexes_dir / f"{project_id}.json"
+
+    def read_index(self, project_id: UUID) -> dict[str, object]:
+        return self._read_json(self.index_path(project_id))
+
+    def write_index(self, project_id: UUID, payload: dict[str, object]) -> None:
+        self._write_json(self.index_path(project_id), payload)
+
+    def rag_prompt_path(self) -> Path:
+        return self.prompts_dir / "rag-system.txt"
