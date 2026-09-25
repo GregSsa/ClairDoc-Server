@@ -20,6 +20,7 @@ class Project(BaseModel):
     description: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    ocr_paused: bool = False
 
 
 class JobStatus(StrEnum):
@@ -39,7 +40,13 @@ class OcrJob(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     input_bytes: int = 0
+    content_sha256: str | None = None
     error: str | None = None
+
+
+class ProjectOcrState(BaseModel):
+    project_id: UUID
+    paused: bool
 
 
 class HealthResponse(BaseModel):

@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -17,6 +18,7 @@ from .models import (
     OcrJob,
     Project,
     ProjectCreate,
+    ProjectOcrState,
 )
 from .rag import NoDocumentsError, OpenAIConfigurationError, ProjectIndexNotFoundError
 from .security import require_api_key
@@ -52,6 +54,11 @@ async def create_project(request: Request, payload: ProjectCreate) -> Project:
     return _storage(request).create_project(payload)
 
 
+@protected.get("/projects", response_model=list[Project])
+async def list_projects(request: Request) -> list[Project]:
+    return _storage(request).iter_projects()
+
+
 @protected.get("/connection", response_model=ConnectionResponse)
 async def verify_connection() -> ConnectionResponse:
     return ConnectionResponse(status="authenticated", version=__version__)
@@ -63,6 +70,33 @@ async def get_project(request: Request, project_id: UUID) -> Project:
         return _storage(request).get_project(project_id)
     except RecordNotFoundError as exc:
         raise _not_found("Projet") from exc
+
+
+@protected.get("/projects/{project_id}/ocr/jobs", response_model=list[OcrJob])
+async def list_project_jobs(request: Request, project_id: UUID) -> list[OcrJob]:
+    try:
+        _storage(request).get_project(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+    return _storage(request).jobs_for_project(project_id)
+
+
+@protected.post("/projects/{project_id}/ocr/pause", response_model=ProjectOcrState)
+async def pause_project_ocr(request: Request, project_id: UUID) -> ProjectOcrState:
+    try:
+        await request.app.state.jobs.pause_project(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+    return ProjectOcrState(project_id=project_id, paused=True)
+
+
+@protected.post("/projects/{project_id}/ocr/resume", response_model=ProjectOcrState)
+async def resume_project_ocr(request: Request, project_id: UUID) -> ProjectOcrState:
+    try:
+        await request.app.state.jobs.resume_project(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+    return ProjectOcrState(project_id=project_id, paused=False)
 
 
 def _rag_error(exc: Exception) -> HTTPException:
@@ -122,6 +156,7 @@ async def create_ocr_job(
     input_path = storage.input_path(job.id)
     total_bytes = 0
     signature = b""
+    digest = hashlib.sha256()
 
     try:
         with input_path.open("wb") as destination:
@@ -129,6 +164,7 @@ async def create_ocr_job(
                 if not signature:
                     signature = chunk[:5]
                 total_bytes += len(chunk)
+                digest.update(chunk)
                 if total_bytes > request.app.state.settings.max_upload_bytes:
                     raise HTTPException(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -152,6 +188,12 @@ async def create_ocr_job(
         raise HTTPException(status_code=415, detail="Le contenu envoyé n'est pas un PDF valide.")
 
     job.input_bytes = total_bytes
+    job.content_sha256 = digest.hexdigest()
+    if project_id is not None:
+        duplicate = storage.find_job_by_hash(project_id, job.content_sha256, job.id)
+        if duplicate is not None:
+            storage.delete_job(job.id)
+            return duplicate
     storage.save_job(job)
     await request.app.state.jobs.enqueue(job.id)
     return job
@@ -163,6 +205,21 @@ async def get_ocr_job(request: Request, job_id: UUID) -> OcrJob:
         return _storage(request).get_job(job_id)
     except RecordNotFoundError as exc:
         raise _not_found("Travail OCR") from exc
+
+
+@protected.post("/ocr/jobs/{job_id}/retry", response_model=OcrJob)
+async def retry_ocr_job(request: Request, job_id: UUID) -> OcrJob:
+    storage = _storage(request)
+    try:
+        job = storage.get_job(job_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Travail OCR") from exc
+    if job.status != JobStatus.FAILED:
+        raise HTTPException(status_code=409, detail="Seul un travail en échec peut être relancé.")
+    if not storage.input_path(job_id).is_file():
+        raise _not_found("PDF source")
+    await request.app.state.jobs.retry(job_id)
+    return storage.get_job(job_id)
 
 
 def _completed_output(request: Request, job_id: UUID, kind: str) -> tuple[OcrJob, Path]:

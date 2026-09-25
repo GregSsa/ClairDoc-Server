@@ -18,6 +18,7 @@ class OcrJobManager:
         self.settings = settings
         self.queue: asyncio.Queue[UUID] = asyncio.Queue()
         self.workers: list[asyncio.Task[None]] = []
+        self._resume_condition = asyncio.Condition()
 
     async def start(self) -> None:
         for job in self.storage.iter_jobs():
@@ -43,6 +44,35 @@ class OcrJobManager:
 
     async def enqueue(self, job_id: UUID) -> None:
         await self.queue.put(job_id)
+
+    async def pause_project(self, project_id: UUID) -> None:
+        project = self.storage.get_project(project_id)
+        project.ocr_paused = True
+        self.storage.save_project(project)
+
+    async def resume_project(self, project_id: UUID) -> None:
+        project = self.storage.get_project(project_id)
+        project.ocr_paused = False
+        self.storage.save_project(project)
+        async with self._resume_condition:
+            self._resume_condition.notify_all()
+
+    async def retry(self, job_id: UUID) -> None:
+        job = self.storage.get_job(job_id)
+        job.status = JobStatus.QUEUED
+        job.started_at = None
+        job.completed_at = None
+        job.error = None
+        self.storage.save_job(job)
+        await self.enqueue(job_id)
+
+    async def _wait_if_paused(self, project_id: UUID | None) -> None:
+        if project_id is None:
+            return
+        async with self._resume_condition:
+            await self._resume_condition.wait_for(
+                lambda: not self.storage.get_project(project_id).ocr_paused
+            )
 
     async def _worker(self, index: int) -> None:
         logger.info("Démarrage du worker OCR %s", index)
@@ -86,6 +116,8 @@ class OcrJobManager:
         ]
 
     async def _process(self, job_id: UUID) -> None:
+        job = self.storage.get_job(job_id)
+        await self._wait_if_paused(job.project_id)
         job = self.storage.get_job(job_id)
         command = self._resolve_command()
         if command is None:

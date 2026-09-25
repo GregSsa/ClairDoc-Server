@@ -75,6 +75,39 @@ def test_project_is_persisted_as_json(tmp_path: Path) -> None:
     assert (tmp_path / "data" / "projects" / f"{project_id}.json").is_file()
 
 
+def test_projects_can_be_listed_after_creation(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    with make_client(tmp_path) as client:
+        client.post("/api/v1/projects", headers=headers, json={"name": "Archives"})
+        response = client.get("/api/v1/projects", headers=headers)
+
+    assert response.status_code == 200
+    assert [project["name"] for project in response.json()] == ["Archives"]
+
+
+def test_duplicate_pdf_is_reused_within_project(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    pdf = b"%PDF-1.4\n%%EOF"
+    with make_client(tmp_path) as client:
+        project = client.post("/api/v1/projects", headers=headers, json={"name": "Archives"})
+        project_id = project.json()["id"]
+        paused = client.post(f"/api/v1/projects/{project_id}/ocr/pause", headers=headers)
+        first = client.post(
+            f"/api/v1/ocr/jobs?project_id={project_id}",
+            headers=headers,
+            files={"file": ("first.pdf", pdf, "application/pdf")},
+        )
+        duplicate = client.post(
+            f"/api/v1/ocr/jobs?project_id={project_id}",
+            headers=headers,
+            files={"file": ("copy.pdf", pdf, "application/pdf")},
+        )
+
+    assert paused.json()["paused"] is True
+    assert duplicate.json()["id"] == first.json()["id"]
+    assert len(list((tmp_path / "data" / "jobs").iterdir())) == 1
+
+
 def test_index_requires_openai_key(tmp_path: Path) -> None:
     headers = {"X-ClairDoc-Key": "test-secret"}
     with make_client(tmp_path) as client:

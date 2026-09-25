@@ -13,6 +13,9 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Il exécute l
 - PDF OCRisé et texte sidecar téléchargeables ;
 - limites de taille, validation PDF et journaux locaux ;
 - traitement concurrent configurable, limité à un travail par défaut.
+- liste persistante des projets et travaux OCR ;
+- pause, reprise et relance des travaux en échec ;
+- détection SHA-256 des PDF identiques dans un même projet ;
 - extraction du texte des PDF OCRisés, découpage et embeddings OpenAI ;
 - index sémantique JSON local, avec réutilisation des documents inchangés ;
 - questions/réponses RAG avec extraits sources.
@@ -107,8 +110,13 @@ Le dossier `data` et le fichier `.env` sont exclus de Git.
 | `GET` | `/api/v1/connection` | Vérifier la clé et la connexion de l'application |
 | `POST` | `/api/v1/projects` | Créer un projet local |
 | `GET` | `/api/v1/projects/{id}` | Lire un projet |
+| `GET` | `/api/v1/projects` | Lister les projets existants |
+| `GET` | `/api/v1/projects/{id}/ocr/jobs` | Lister les travaux OCR d'un projet |
+| `POST` | `/api/v1/projects/{id}/ocr/pause` | Mettre la file du projet en pause |
+| `POST` | `/api/v1/projects/{id}/ocr/resume` | Reprendre la file du projet |
 | `POST` | `/api/v1/ocr/jobs` | Envoyer un PDF et créer un travail |
 | `GET` | `/api/v1/ocr/jobs/{id}` | Lire l'état d'un travail |
+| `POST` | `/api/v1/ocr/jobs/{id}/retry` | Relancer un travail en échec |
 | `GET` | `/api/v1/ocr/jobs/{id}/document` | Télécharger le PDF OCRisé |
 | `GET` | `/api/v1/ocr/jobs/{id}/text` | Télécharger le texte extrait |
 | `POST` | `/api/v1/projects/{id}/index` | Créer ou actualiser l'index sémantique |

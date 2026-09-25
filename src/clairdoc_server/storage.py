@@ -1,8 +1,9 @@
 import json
+import shutil
 from pathlib import Path
 from uuid import UUID
 
-from .models import OcrJob, Project, ProjectCreate, utc_now
+from .models import JobStatus, OcrJob, Project, ProjectCreate, utc_now
 
 
 class RecordNotFoundError(FileNotFoundError):
@@ -57,6 +58,24 @@ class LocalStorage:
         payload = self._read_json(self.projects_dir / f"{project_id}.json")
         return Project.model_validate(payload)
 
+    def save_project(self, project: Project) -> None:
+        project.updated_at = utc_now()
+        self._write_json(
+            self.projects_dir / f"{project.id}.json",
+            project.model_dump(mode="json"),
+        )
+
+    def iter_projects(self) -> list[Project]:
+        projects: list[Project] = []
+        if not self.projects_dir.exists():
+            return projects
+        for record_path in self.projects_dir.glob("*.json"):
+            try:
+                projects.append(Project.model_validate(self._read_json(record_path)))
+            except (ValueError, OSError):
+                continue
+        return sorted(projects, key=lambda project: project.updated_at, reverse=True)
+
     def create_job(self, original_filename: str, project_id: UUID | None) -> OcrJob:
         job = OcrJob(original_filename=original_filename, project_id=project_id)
         self.job_dir(job.id).mkdir(parents=True, exist_ok=False)
@@ -80,6 +99,28 @@ class LocalStorage:
             except (ValueError, OSError):
                 continue
         return jobs
+
+    def jobs_for_project(self, project_id: UUID) -> list[OcrJob]:
+        return sorted(
+            (job for job in self.iter_jobs() if job.project_id == project_id),
+            key=lambda job: job.created_at,
+        )
+
+    def find_job_by_hash(
+        self, project_id: UUID, content_sha256: str, exclude_job_id: UUID | None = None
+    ) -> OcrJob | None:
+        for job in self.iter_jobs():
+            if (
+                job.id != exclude_job_id
+                and job.project_id == project_id
+                and job.content_sha256 == content_sha256
+                and job.status != JobStatus.FAILED
+            ):
+                return job
+        return None
+
+    def delete_job(self, job_id: UUID) -> None:
+        shutil.rmtree(self.job_dir(job_id), ignore_errors=True)
 
     def job_dir(self, job_id: UUID) -> Path:
         return self.jobs_dir / str(job_id)
