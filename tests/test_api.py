@@ -86,6 +86,45 @@ def test_projects_can_be_listed_after_creation(tmp_path: Path) -> None:
     assert [project["name"] for project in response.json()] == ["Archives"]
 
 
+def test_project_can_be_renamed_and_deleted_without_touching_source(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    source = tmp_path / "originaux"
+    source.mkdir()
+    original = source / "important.txt"
+    original.write_text("à conserver", encoding="utf-8")
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/v1/projects",
+            headers=headers,
+            json={"name": "Archives", "source_root": str(source)},
+        )
+        project_id = created.json()["id"]
+        renamed = client.patch(
+            f"/api/v1/projects/{project_id}",
+            headers=headers,
+            json={"name": "Administratif"},
+        )
+        deleted = client.delete(f"/api/v1/projects/{project_id}", headers=headers)
+        missing = client.get(f"/api/v1/projects/{project_id}", headers=headers)
+
+    assert renamed.json()["name"] == "Administratif"
+    assert renamed.json()["source_root"] == str(source)
+    assert deleted.status_code == 204
+    assert missing.status_code == 404
+    assert original.read_text(encoding="utf-8") == "à conserver"
+
+
+def test_runtime_info_does_not_expose_secrets(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    with make_client(tmp_path) as client:
+        response = client.get("/api/v1/runtime", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["embedding_model"] == "text-embedding-3-small"
+    assert response.json()["openai_configured"] is False
+    assert "api_key" not in response.json()
+
+
 def test_duplicate_pdf_is_reused_within_project(tmp_path: Path) -> None:
     headers = {"X-ClairDoc-Key": "test-secret"}
     pdf = b"%PDF-1.4\n%%EOF"

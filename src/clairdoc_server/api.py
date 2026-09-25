@@ -27,6 +27,8 @@ from .models import (
     Project,
     ProjectCreate,
     ProjectOcrState,
+    ProjectUpdate,
+    RuntimeInfo,
 )
 from .rag import NoDocumentsError, OpenAIConfigurationError, ProjectIndexNotFoundError
 from .security import require_api_key
@@ -78,6 +80,61 @@ async def get_project(request: Request, project_id: UUID) -> Project:
         return _storage(request).get_project(project_id)
     except RecordNotFoundError as exc:
         raise _not_found("Projet") from exc
+
+
+@protected.patch("/projects/{project_id}", response_model=Project)
+async def update_project(request: Request, project_id: UUID, payload: ProjectUpdate) -> Project:
+    try:
+        project = _storage(request).get_project(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+    if payload.name is not None:
+        project.name = payload.name.strip()
+    if "description" in payload.model_fields_set:
+        project.description = payload.description
+    if "source_root" in payload.model_fields_set:
+        project.source_root = payload.source_root
+    _storage(request).save_project(project)
+    return project
+
+
+@protected.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project(request: Request, project_id: UUID) -> None:
+    try:
+        active_ocr = any(
+            job.status in {JobStatus.QUEUED, JobStatus.RUNNING}
+            for job in _storage(request).jobs_for_project(project_id)
+        )
+        active_index = any(
+            task.project_id == project_id
+            and task.status in {JobStatus.QUEUED, JobStatus.RUNNING}
+            for task in _storage(request).iter_index_tasks()
+        )
+        if active_ocr or active_index:
+            raise HTTPException(
+                status_code=409,
+                detail="Attendez la fin des traitements avant de supprimer le projet.",
+            )
+        _storage(request).delete_project(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+
+
+@protected.get("/runtime", response_model=RuntimeInfo)
+async def runtime_info(request: Request) -> RuntimeInfo:
+    settings = request.app.state.settings
+    return RuntimeInfo(
+        version=__version__,
+        llm_model=settings.llm_model,
+        embedding_model=settings.embedding_model,
+        embedding_dimensions=settings.embedding_dimensions,
+        ocr_languages=settings.ocr_languages,
+        data_dir=str(settings.data_dir.resolve()),
+        max_upload_mb=settings.max_upload_mb,
+        max_index_tokens=settings.max_index_tokens,
+        openai_configured=bool(settings.openai_api_key),
+        tls_enabled=bool(settings.tls_certfile and settings.tls_keyfile),
+    )
 
 
 @protected.get("/projects/{project_id}/ocr/jobs", response_model=list[OcrJob])

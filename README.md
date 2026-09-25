@@ -127,8 +127,11 @@ Le dossier `data` et le fichier `.env` sont exclus de Git.
 | `GET` | `/api/v1/connection` | Vérifier la clé et la connexion de l'application |
 | `POST` | `/api/v1/projects` | Créer un projet local |
 | `GET` | `/api/v1/projects/{id}` | Lire un projet |
+| `PATCH` | `/api/v1/projects/{id}` | Renommer le projet ou associer son dossier source |
+| `DELETE` | `/api/v1/projects/{id}` | Supprimer les données ClairDoc du projet |
 | `GET` | `/api/v1/projects` | Lister les projets existants |
 | `GET` | `/api/v1/projects/{id}/documents` | Lister les documents, métadonnées et relations du projet |
+| `GET` | `/api/v1/runtime` | Lire les modèles et paramètres non secrets du serveur |
 | `GET` | `/api/v1/projects/{id}/ocr/jobs` | Lister les travaux OCR d'un projet |
 | `POST` | `/api/v1/projects/{id}/ocr/pause` | Mettre la file du projet en pause |
 | `POST` | `/api/v1/projects/{id}/ocr/resume` | Reprendre la file du projet |

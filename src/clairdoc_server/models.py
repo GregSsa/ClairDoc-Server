@@ -12,12 +12,20 @@ def utc_now() -> datetime:
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
+    source_root: str | None = Field(default=None, max_length=4096)
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+    source_root: str | None = Field(default=None, max_length=4096)
 
 
 class Project(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     name: str
     description: str | None = None
+    source_root: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     ocr_paused: bool = False
@@ -62,6 +70,19 @@ class HealthResponse(BaseModel):
 class ConnectionResponse(BaseModel):
     status: str
     version: str
+
+
+class RuntimeInfo(BaseModel):
+    version: str
+    llm_model: str
+    embedding_model: str
+    embedding_dimensions: int
+    ocr_languages: str
+    data_dir: str
+    max_upload_mb: int
+    max_index_tokens: int
+    openai_configured: bool
+    tls_enabled: bool
 
 
 class IndexResponse(BaseModel):

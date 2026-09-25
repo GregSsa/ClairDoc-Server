@@ -61,7 +61,11 @@ class LocalStorage:
             raise RecordNotFoundError(path.name) from exc
 
     def create_project(self, request: ProjectCreate) -> Project:
-        project = Project(name=request.name.strip(), description=request.description)
+        project = Project(
+            name=request.name.strip(),
+            description=request.description,
+            source_root=request.source_root,
+        )
         self._write_json(
             self.projects_dir / f"{project.id}.json",
             project.model_dump(mode="json"),
@@ -78,6 +82,20 @@ class LocalStorage:
             self.projects_dir / f"{project.id}.json",
             project.model_dump(mode="json"),
         )
+
+    def delete_project(self, project_id: UUID) -> None:
+        self.get_project(project_id)
+        for job in self.jobs_for_project(project_id):
+            self.delete_job(job.id)
+        for path in (
+            self.projects_dir / f"{project_id}.json",
+            self.indexes_dir / f"{project_id}.json",
+            self.plans_dir / f"{project_id}.json",
+        ):
+            path.unlink(missing_ok=True)
+        for task in self.iter_index_tasks():
+            if task.project_id == project_id:
+                (self.index_tasks_dir / f"{task.id}.json").unlink(missing_ok=True)
 
     def iter_projects(self) -> list[Project]:
         projects: list[Project] = []
