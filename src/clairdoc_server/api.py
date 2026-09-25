@@ -1,4 +1,6 @@
+import asyncio
 import hashlib
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -12,9 +14,12 @@ from .extractors import SUPPORTED_EXTENSIONS
 from .models import (
     AskRequest,
     AskResponse,
+    BackupResponse,
     ConnectionResponse,
     HealthResponse,
+    IndexEstimate,
     IndexResponse,
+    IndexTask,
     JobStatus,
     OcrJob,
     OrganizationPlan,
@@ -124,6 +129,49 @@ async def index_project(request: Request, project_id: UUID) -> IndexResponse:
         raise _rag_error(exc) from exc
 
 
+@protected.get("/projects/{project_id}/index/estimate", response_model=IndexEstimate)
+async def estimate_project_index(request: Request, project_id: UUID) -> IndexEstimate:
+    try:
+        return await request.app.state.rag.estimate_project(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+
+
+@protected.post(
+    "/projects/{project_id}/index/jobs",
+    response_model=IndexTask,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_index_task(request: Request, project_id: UUID) -> IndexTask:
+    try:
+        _storage(request).get_project(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+    return await request.app.state.index_jobs.create(project_id)
+
+
+@protected.get("/index/jobs/{task_id}", response_model=IndexTask)
+async def get_index_task(request: Request, task_id: UUID) -> IndexTask:
+    try:
+        return _storage(request).get_index_task(task_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Indexation") from exc
+
+
+@protected.post("/index/jobs/{task_id}/retry", response_model=IndexTask)
+async def retry_index_task(request: Request, task_id: UUID) -> IndexTask:
+    try:
+        task = _storage(request).get_index_task(task_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Indexation") from exc
+    if task.status != JobStatus.FAILED:
+        raise HTTPException(
+            status_code=409,
+            detail="Seule une indexation en échec peut être relancée.",
+        )
+    return await request.app.state.index_jobs.retry(task_id)
+
+
 @protected.post("/projects/{project_id}/ask", response_model=AskResponse)
 async def ask_project(request: Request, project_id: UUID, payload: AskRequest) -> AskResponse:
     try:
@@ -146,6 +194,16 @@ async def create_organization_plan(request: Request, project_id: UUID) -> Organi
             status_code=409,
             detail="Le projet doit être indexé avant de préparer le classement.",
         ) from exc
+
+
+@protected.post("/maintenance/backups", response_model=BackupResponse)
+async def create_backup(request: Request) -> BackupResponse:
+    path = await asyncio.to_thread(_storage(request).create_metadata_backup)
+    return BackupResponse(
+        path=str(path),
+        size_bytes=path.stat().st_size,
+        created_at=datetime.now(UTC),
+    )
 
 
 @protected.post("/ocr/jobs", response_model=OcrJob, status_code=status.HTTP_202_ACCEPTED)

@@ -72,6 +72,30 @@ class IndexResponse(BaseModel):
     embedding_model: str
 
 
+class IndexEstimate(BaseModel):
+    project_id: UUID
+    documents_total: int
+    documents_to_embed: int
+    documents_reused: int
+    estimated_tokens: int
+    estimated_cost_usd: float
+    price_per_million_tokens_usd: float
+    embedding_model: str
+
+
+class IndexTask(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    project_id: UUID
+    status: JobStatus = JobStatus.QUEUED
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    estimate: IndexEstimate | None = None
+    result: IndexResponse | None = None
+    error: str | None = None
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=3, max_length=4000)
     top_k: int | None = Field(default=None, ge=1, le=20)
@@ -107,3 +131,9 @@ class OrganizationPlan(BaseModel):
     project_id: UUID
     created_at: datetime = Field(default_factory=utc_now)
     entries: list[OrganizationEntry]
+
+
+class BackupResponse(BaseModel):
+    path: str
+    size_bytes: int
+    created_at: datetime

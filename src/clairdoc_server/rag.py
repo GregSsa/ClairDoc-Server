@@ -12,7 +12,7 @@ from openai import AsyncOpenAI
 from pypdf import PdfReader
 
 from .config import Settings
-from .models import AskResponse, Citation, IndexResponse, JobStatus
+from .models import AskResponse, Citation, IndexEstimate, IndexResponse, JobStatus
 from .storage import LocalStorage, RecordNotFoundError
 
 DEFAULT_SYSTEM_PROMPT = """Tu es l'assistant documentaire ClairDoc.
@@ -153,7 +153,11 @@ class RagService:
     def _client(self) -> AsyncOpenAI:
         if not self.settings.openai_api_key:
             raise OpenAIConfigurationError("La clé OPENAI_API_KEY n'est pas configurée.")
-        return AsyncOpenAI(api_key=self.settings.openai_api_key)
+        return AsyncOpenAI(
+            api_key=self.settings.openai_api_key,
+            max_retries=self.settings.openai_max_retries,
+            timeout=self.settings.openai_timeout_seconds,
+        )
 
     def _system_prompt(self) -> str:
         path = self.storage.rag_prompt_path()
@@ -173,6 +177,71 @@ class RagService:
             vectors.extend(item.embedding for item in response.data)
         return vectors
 
+    def _reusable_documents(self, project_id: UUID) -> dict[str, Any]:
+        try:
+            existing = self.storage.read_index(project_id)
+        except RecordNotFoundError:
+            return {}
+        same_configuration = (
+            existing.get("version") == 2
+            and existing.get("embedding_model") == self.settings.embedding_model
+            and existing.get("embedding_dimensions") == self.settings.embedding_dimensions
+            and existing.get("chunk_chars") == self.settings.rag_chunk_chars
+            and existing.get("chunk_overlap") == self.settings.rag_chunk_overlap
+        )
+        if not same_configuration:
+            return {}
+        return {
+            str(document["job_id"]): document
+            for document in existing.get("documents", [])
+            if isinstance(document, dict) and "job_id" in document
+        }
+
+    async def estimate_project(self, project_id: UUID) -> IndexEstimate:
+        self.storage.get_project(project_id)
+        jobs = [
+            job
+            for job in self.storage.jobs_for_project(project_id)
+            if job.status == JobStatus.COMPLETED and self.storage.text_path(job.id).is_file()
+        ]
+        reusable = self._reusable_documents(project_id)
+        characters = 0
+        reused = 0
+        to_embed = 0
+        for job in jobs:
+            source_path = self.storage.source_path(job.id)
+            document_hash = await asyncio.to_thread(_file_hash, source_path)
+            previous = reusable.get(str(job.id))
+            if previous and previous.get("document_hash") == document_hash:
+                reused += 1
+                continue
+            to_embed += 1
+            if self.storage.output_path(job.id).is_file():
+                pages = await asyncio.to_thread(
+                    _extract_pdf_pages, self.storage.output_path(job.id)
+                )
+                characters += sum(len(text) for _, text in pages)
+            else:
+                characters += len(
+                    self.storage.text_path(job.id).read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                )
+        estimated_tokens = math.ceil(characters / 4)
+        estimated_cost = (
+            estimated_tokens / 1_000_000 * self.settings.embedding_price_per_million_usd
+        )
+        return IndexEstimate(
+            project_id=project_id,
+            documents_total=len(jobs),
+            documents_to_embed=to_embed,
+            documents_reused=reused,
+            estimated_tokens=estimated_tokens,
+            estimated_cost_usd=round(estimated_cost, 6),
+            price_per_million_tokens_usd=self.settings.embedding_price_per_million_usd,
+            embedding_model=self.settings.embedding_model,
+        )
+
     async def index_project(self, project_id: UUID) -> IndexResponse:
         self._client()
         self.storage.get_project(project_id)
@@ -185,24 +254,7 @@ class RagService:
             if not completed_jobs:
                 raise NoDocumentsError("Aucun document analysé n'est disponible pour ce projet.")
 
-            existing_documents: dict[str, Any] = {}
-            try:
-                existing = self.storage.read_index(project_id)
-                same_configuration = (
-                    existing.get("version") == 2
-                    and existing.get("embedding_model") == self.settings.embedding_model
-                    and existing.get("embedding_dimensions") == self.settings.embedding_dimensions
-                    and existing.get("chunk_chars") == self.settings.rag_chunk_chars
-                    and existing.get("chunk_overlap") == self.settings.rag_chunk_overlap
-                )
-                if same_configuration:
-                    existing_documents = {
-                        str(document["job_id"]): document
-                        for document in existing.get("documents", [])
-                        if isinstance(document, dict) and "job_id" in document
-                    }
-            except RecordNotFoundError:
-                pass
+            existing_documents = self._reusable_documents(project_id)
 
             documents: list[dict[str, Any]] = []
             reused = 0

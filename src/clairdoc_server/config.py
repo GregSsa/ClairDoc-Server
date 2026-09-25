@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     rag_top_k: int = Field(default=6, ge=1, le=20)
     rag_chunk_chars: int = Field(default=2400, ge=500, le=12000)
     rag_chunk_overlap: int = Field(default=300, ge=0, le=2000)
+    embedding_price_per_million_usd: float = Field(default=0.02, ge=0)
+    max_index_tokens: int = Field(default=10_000_000, ge=1_000)
+    openai_max_retries: int = Field(default=5, ge=0, le=10)
+    openai_timeout_seconds: float = Field(default=60, ge=5, le=600)
+    tls_certfile: Path | None = None
+    tls_keyfile: Path | None = None
+    api_requests_per_minute: int = Field(default=600, ge=30, le=10000)
 
     @cached_property
     def max_upload_bytes(self) -> int:

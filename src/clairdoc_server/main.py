@@ -7,8 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .api import router
 from .config import Settings
+from .index_jobs import IndexJobManager
 from .jobs import OcrJobManager
 from .logging_config import configure_logging
+from .middleware import LocalRateLimitMiddleware
 from .organization import OrganizationService
 from .rag import RagService
 from .storage import LocalStorage
@@ -19,6 +21,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     storage = LocalStorage(resolved_settings.data_dir)
     jobs = OcrJobManager(storage, resolved_settings)
     rag = RagService(storage, resolved_settings)
+    index_jobs = IndexJobManager(storage, rag, resolved_settings)
     organization = OrganizationService(storage)
 
     @asynccontextmanager
@@ -29,11 +32,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.storage = storage
         app.state.jobs = jobs
         app.state.rag = rag
+        app.state.index_jobs = index_jobs
         app.state.organization = organization
         await jobs.start()
+        await index_jobs.start()
         try:
             yield
         finally:
+            await index_jobs.stop()
             await jobs.stop()
 
     app = FastAPI(
@@ -48,6 +54,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_credentials=False,
         allow_methods=["GET", "POST"],
         allow_headers=["Content-Type", "X-ClairDoc-Key"],
+    )
+    app.add_middleware(
+        LocalRateLimitMiddleware,
+        requests_per_minute=resolved_settings.api_requests_per_minute,
     )
     app.include_router(router)
     return app

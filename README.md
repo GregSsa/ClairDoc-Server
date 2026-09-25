@@ -23,6 +23,11 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Il exécute l
 - citations PDF avec numéro de page et métadonnées locales ;
 - recherche hybride embeddings + mots-clés ;
 - proposition de classement par catégorie et année.
+- estimation des tokens et du coût avant indexation ;
+- indexation persistante en arrière-plan avec reprise après redémarrage ;
+- nouvelles tentatives bornées pour les erreurs OpenAI temporaires ;
+- sauvegardes ZIP des métadonnées et version du schéma local ;
+- limitation locale du débit HTTP et TLS facultatif.
 
 ## Prérequis
 
@@ -59,6 +64,8 @@ uv run clairdoc-server
 
 L'API écoute par défaut uniquement sur `127.0.0.1:8787`. Pour permettre l'accès depuis un autre appareil du réseau local, définissez `CLAIRDOC_HOST=0.0.0.0`, ajoutez une règle de pare-feu limitée au réseau privé et utilisez une clé API forte. N'exposez pas directement ce port sur Internet.
 
+Pour chiffrer une connexion réseau, renseignez ensemble `CLAIRDOC_TLS_CERTFILE` et `CLAIRDOC_TLS_KEYFILE`, puis utilisez une URL `https://` dans l'application. La limite par défaut est de 600 requêtes par minute et par adresse cliente ; elle se règle avec `CLAIRDOC_API_REQUESTS_PER_MINUTE`.
+
 - documentation interactive : `http://127.0.0.1:8787/docs`
 - état public : `GET /api/v1/health`
 - en-tête protégé : `X-ClairDoc-Key: votre-cle`
@@ -69,6 +76,8 @@ L'API écoute par défaut uniquement sur `127.0.0.1:8787`. Pour permettre l'acc�
 - `OPENAI_API_KEY` est la clé du compte OpenAI utilisée pour les embeddings et les réponses. Elle reste uniquement dans le fichier `.env` du serveur. Elle ne doit jamais être placée dans l'application Tauri ni enregistrée dans Git.
 
 Par défaut, les embeddings utilisent `text-embedding-3-small` avec 512 dimensions et les réponses utilisent `gpt-6-luna`. Ces valeurs peuvent être changées dans `.env`.
+
+L'estimation préalable utilise approximativement un token pour quatre caractères. Elle sert de garde-fou, pas de facture exacte. Le tarif de référence est configurable avec `CLAIRDOC_EMBEDDING_PRICE_PER_MILLION_USD` afin de pouvoir l'actualiser sans changer le code. `CLAIRDOC_MAX_INDEX_TOKENS` bloque une tâche qui dépasserait la limite choisie.
 
 Exemple d'envoi :
 
@@ -94,12 +103,15 @@ Par défaut, tout est conservé dans `./data` :
 
 ```text
 data/
+├── schema.json
 ├── projects/<id>.json
 ├── jobs/<id>/job.json
 ├── jobs/<id>/input.pdf
 ├── jobs/<id>/output.pdf
 ├── jobs/<id>/output.txt
 ├── indexes/<projet-id>.json
+├── index-tasks/<id>.json
+├── backups/clairdoc-metadata-<date>.zip
 ├── prompts/rag-system.txt
 └── logs/clairdoc-server.log
 ```
@@ -124,9 +136,13 @@ Le dossier `data` et le fichier `.env` sont exclus de Git.
 | `POST` | `/api/v1/document/jobs` | Envoyer un document pris en charge |
 | `GET` | `/api/v1/ocr/jobs/{id}/document` | Télécharger le PDF OCRisé |
 | `GET` | `/api/v1/ocr/jobs/{id}/text` | Télécharger le texte extrait |
-| `POST` | `/api/v1/projects/{id}/index` | Créer ou actualiser l'index sémantique |
+| `GET` | `/api/v1/projects/{id}/index/estimate` | Estimer les tokens et le coût de l'indexation |
+| `POST` | `/api/v1/projects/{id}/index/jobs` | Démarrer une indexation persistante |
+| `GET` | `/api/v1/index/jobs/{id}` | Suivre une indexation persistante |
+| `POST` | `/api/v1/index/jobs/{id}/retry` | Relancer une indexation en échec |
 | `POST` | `/api/v1/projects/{id}/ask` | Poser une question sur l'index du projet |
 | `POST` | `/api/v1/projects/{id}/organization/plan` | Préparer un plan de classement |
+| `POST` | `/api/v1/maintenance/backups` | Créer une sauvegarde ZIP des métadonnées |
 
 Les métadonnées automatiques (catégorie, date, organisme, personnes et montants) sont calculées localement à partir du texte extrait. Elles constituent des propositions à vérifier, pas des données administratives garanties.
 

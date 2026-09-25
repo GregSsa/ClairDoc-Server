@@ -177,3 +177,74 @@ def test_text_document_is_extracted(tmp_path: Path) -> None:
     assert response.status_code == 202
     assert job.json()["source_relative_path"] == "notes/test.txt"
     assert extracted.text == "Bonjour ClairDoc"
+
+
+def test_index_estimate_is_available_without_openai_key(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    text = "Bonjour ClairDoc"
+    with make_client(tmp_path) as client:
+        project = client.post("/api/v1/projects", headers=headers, json={"name": "Archives"})
+        project_id = project.json()["id"]
+        uploaded = client.post(
+            f"/api/v1/document/jobs?project_id={project_id}",
+            headers=headers,
+            files={"file": ("test.txt", text, "text/plain")},
+        )
+        job_id = uploaded.json()["id"]
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            job = client.get(f"/api/v1/ocr/jobs/{job_id}", headers=headers)
+            if job.json()["status"] == "completed":
+                break
+            sleep(0.01)
+        estimate = client.get(
+            f"/api/v1/projects/{project_id}/index/estimate",
+            headers=headers,
+        )
+
+    assert estimate.status_code == 200
+    assert estimate.json()["documents_total"] == 1
+    assert estimate.json()["documents_to_embed"] == 1
+    assert estimate.json()["estimated_tokens"] == 4
+    assert estimate.json()["estimated_cost_usd"] == 0.0
+
+
+def test_background_index_task_persists_failure(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    with make_client(tmp_path) as client:
+        project = client.post("/api/v1/projects", headers=headers, json={"name": "Archives"})
+        project_id = project.json()["id"]
+        started = client.post(
+            f"/api/v1/projects/{project_id}/index/jobs",
+            headers=headers,
+        )
+        task_id = started.json()["id"]
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            task = client.get(f"/api/v1/index/jobs/{task_id}", headers=headers)
+            if task.json()["status"] == "failed":
+                break
+            sleep(0.01)
+
+    assert started.status_code == 202
+    assert task.json()["status"] == "failed"
+    assert "OPENAI_API_KEY" in task.json()["error"]
+    assert (tmp_path / "data" / "index-tasks" / f"{task_id}.json").is_file()
+
+
+def test_metadata_backup_contains_schema_and_projects(tmp_path: Path) -> None:
+    import zipfile
+
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    with make_client(tmp_path) as client:
+        project = client.post("/api/v1/projects", headers=headers, json={"name": "Archives"})
+        response = client.post("/api/v1/maintenance/backups", headers=headers)
+
+    backup = Path(response.json()["path"])
+    with zipfile.ZipFile(backup) as archive:
+        names = set(archive.namelist())
+
+    assert response.status_code == 200
+    assert backup.is_file()
+    assert "schema.json" in names
+    assert f"projects/{project.json()['id']}.json" in names

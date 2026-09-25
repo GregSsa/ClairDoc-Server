@@ -1,9 +1,13 @@
 import json
 import shutil
+import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from .models import JobStatus, OcrJob, Project, ProjectCreate, utc_now
+from .models import IndexTask, JobStatus, OcrJob, Project, ProjectCreate, utc_now
+
+SCHEMA_VERSION = 2
 
 
 class RecordNotFoundError(FileNotFoundError):
@@ -19,6 +23,8 @@ class LocalStorage:
         self.indexes_dir = self.root / "indexes"
         self.prompts_dir = self.root / "prompts"
         self.plans_dir = self.root / "plans"
+        self.index_tasks_dir = self.root / "index-tasks"
+        self.backups_dir = self.root / "backups"
 
     def initialize(self) -> None:
         for directory in (
@@ -28,8 +34,14 @@ class LocalStorage:
             self.indexes_dir,
             self.prompts_dir,
             self.plans_dir,
+            self.index_tasks_dir,
+            self.backups_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
+        self._write_json(
+            self.root / "schema.json",
+            {"version": SCHEMA_VERSION, "updated_at": datetime.now(UTC).isoformat()},
+        )
 
     @staticmethod
     def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -172,3 +184,56 @@ class LocalStorage:
 
     def write_plan(self, project_id: UUID, payload: dict[str, object]) -> None:
         self._write_json(self.plan_path(project_id), payload)
+
+    def create_index_task(self, project_id: UUID) -> IndexTask:
+        task = IndexTask(project_id=project_id)
+        self.save_index_task(task)
+        return task
+
+    def save_index_task(self, task: IndexTask) -> None:
+        task.updated_at = utc_now()
+        self._write_json(
+            self.index_tasks_dir / f"{task.id}.json",
+            task.model_dump(mode="json"),
+        )
+
+    def get_index_task(self, task_id: UUID) -> IndexTask:
+        return IndexTask.model_validate(
+            self._read_json(self.index_tasks_dir / f"{task_id}.json")
+        )
+
+    def iter_index_tasks(self) -> list[IndexTask]:
+        tasks: list[IndexTask] = []
+        for path in self.index_tasks_dir.glob("*.json"):
+            try:
+                tasks.append(IndexTask.model_validate(self._read_json(path)))
+            except (ValueError, OSError):
+                continue
+        return tasks
+
+    def create_metadata_backup(self) -> Path:
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        destination = self.backups_dir / f"clairdoc-metadata-{stamp}.zip"
+        included_directories = (
+            self.projects_dir,
+            self.indexes_dir,
+            self.prompts_dir,
+            self.plans_dir,
+            self.index_tasks_dir,
+        )
+        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            schema_path = self.root / "schema.json"
+            if schema_path.is_file():
+                archive.write(schema_path, schema_path.relative_to(self.root))
+            for directory in included_directories:
+                for path in directory.rglob("*"):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(self.root))
+            for job in self.iter_jobs():
+                record = self.job_record_path(job.id)
+                text = self.text_path(job.id)
+                if record.is_file():
+                    archive.write(record, record.relative_to(self.root))
+                if text.is_file():
+                    archive.write(text, text.relative_to(self.root))
+        return destination
