@@ -248,3 +248,31 @@ def test_metadata_backup_contains_schema_and_projects(tmp_path: Path) -> None:
     assert backup.is_file()
     assert "schema.json" in names
     assert f"projects/{project.json()['id']}.json" in names
+
+
+def test_document_library_lists_completed_documents_before_indexing(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    with make_client(tmp_path) as client:
+        project = client.post("/api/v1/projects", headers=headers, json={"name": "Archives"})
+        project_id = project.json()["id"]
+        uploaded = client.post(
+            f"/api/v1/document/jobs?project_id={project_id}",
+            headers=headers,
+            files={"file": ("facture.txt", "Facture de test", "text/plain")},
+        )
+        job_id = uploaded.json()["id"]
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            job = client.get(f"/api/v1/ocr/jobs/{job_id}", headers=headers)
+            if job.json()["status"] == "completed":
+                break
+            sleep(0.01)
+        library = client.get(
+            f"/api/v1/projects/{project_id}/documents",
+            headers=headers,
+        )
+
+    assert library.status_code == 200
+    assert library.json()["documents"][0]["name"] == "facture.txt"
+    assert library.json()["documents"][0]["category"] == "À indexer"
+    assert library.json()["relationships"] == []

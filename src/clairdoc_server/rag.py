@@ -12,7 +12,16 @@ from openai import AsyncOpenAI
 from pypdf import PdfReader
 
 from .config import Settings
-from .models import AskResponse, Citation, IndexEstimate, IndexResponse, JobStatus
+from .models import (
+    AskResponse,
+    Citation,
+    DocumentLibrary,
+    DocumentRelationship,
+    DocumentSummary,
+    IndexEstimate,
+    IndexResponse,
+    JobStatus,
+)
 from .storage import LocalStorage, RecordNotFoundError
 
 DEFAULT_SYSTEM_PROMPT = """Tu es l'assistant documentaire ClairDoc.
@@ -164,6 +173,82 @@ class RagService:
         if not path.exists():
             path.write_text(DEFAULT_SYSTEM_PROMPT, encoding="utf-8")
         return path.read_text(encoding="utf-8").strip()
+
+    def document_library(self, project_id: UUID) -> DocumentLibrary:
+        self.storage.get_project(project_id)
+        try:
+            index = self.storage.read_index(project_id)
+        except RecordNotFoundError:
+            index = {"documents": []}
+        indexed = {
+            str(document.get("job_id")): document
+            for document in index.get("documents", [])
+            if isinstance(document, dict)
+        }
+        documents: list[DocumentSummary] = []
+        for job in self.storage.jobs_for_project(project_id):
+            if job.status != JobStatus.COMPLETED:
+                continue
+            record = indexed.get(str(job.id), {})
+            metadata = record.get("metadata", {}) if isinstance(record, dict) else {}
+            documents.append(
+                DocumentSummary(
+                    job_id=job.id,
+                    name=job.original_filename,
+                    source_relative_path=job.source_relative_path or job.original_filename,
+                    status="indexed" if record else "ready",
+                    category=str(metadata.get("category") or "À indexer"),
+                    document_date=metadata.get("date"),
+                    organization=metadata.get("organization"),
+                    people=list(metadata.get("people") or []),
+                    amounts=list(metadata.get("amounts") or []),
+                    chunks=len(record.get("chunks", [])) if isinstance(record, dict) else 0,
+                )
+            )
+
+        relationships: list[DocumentRelationship] = []
+        for position, source in enumerate(documents):
+            for target in documents[position + 1 :]:
+                shared_people = sorted(set(source.people) & set(target.people))
+                candidates = [
+                    (
+                        "organization",
+                        source.organization,
+                        bool(source.organization and source.organization == target.organization),
+                    ),
+                    ("person", shared_people[0] if shared_people else None, bool(shared_people)),
+                    (
+                        "category",
+                        source.category,
+                        source.category not in {"Autres", "À indexer"}
+                        and source.category == target.category,
+                    ),
+                    (
+                        "year",
+                        source.document_date[:4] if source.document_date else None,
+                        bool(
+                            source.document_date
+                            and target.document_date
+                            and source.document_date[:4] == target.document_date[:4]
+                        ),
+                    ),
+                ]
+                for kind, label, matches in candidates:
+                    if matches and label:
+                        relationships.append(
+                            DocumentRelationship(
+                                source_job_id=source.job_id,
+                                target_job_id=target.job_id,
+                                kind=kind,
+                                label=str(label),
+                            )
+                        )
+        return DocumentLibrary(
+            project_id=project_id,
+            documents=documents,
+            categories=sorted({document.category for document in documents}),
+            relationships=relationships,
+        )
 
     async def _embeddings(self, texts: list[str]) -> list[list[float]]:
         client = self._client()

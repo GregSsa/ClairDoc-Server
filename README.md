@@ -28,6 +28,7 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Il exécute l
 - nouvelles tentatives bornées pour les erreurs OpenAI temporaires ;
 - sauvegardes ZIP des métadonnées et version du schéma local ;
 - limitation locale du débit HTTP et TLS facultatif.
+- bibliothèque documentaire par projet avec catégories, métadonnées et relations calculées localement.
 
 ## Prérequis
 
@@ -127,6 +128,7 @@ Le dossier `data` et le fichier `.env` sont exclus de Git.
 | `POST` | `/api/v1/projects` | Créer un projet local |
 | `GET` | `/api/v1/projects/{id}` | Lire un projet |
 | `GET` | `/api/v1/projects` | Lister les projets existants |
+| `GET` | `/api/v1/projects/{id}/documents` | Lister les documents, métadonnées et relations du projet |
 | `GET` | `/api/v1/projects/{id}/ocr/jobs` | Lister les travaux OCR d'un projet |
 | `POST` | `/api/v1/projects/{id}/ocr/pause` | Mettre la file du projet en pause |
 | `POST` | `/api/v1/projects/{id}/ocr/resume` | Reprendre la file du projet |

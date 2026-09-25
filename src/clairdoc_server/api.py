@@ -16,6 +16,7 @@ from .models import (
     AskResponse,
     BackupResponse,
     ConnectionResponse,
+    DocumentLibrary,
     HealthResponse,
     IndexEstimate,
     IndexResponse,
@@ -133,6 +134,14 @@ async def index_project(request: Request, project_id: UUID) -> IndexResponse:
 async def estimate_project_index(request: Request, project_id: UUID) -> IndexEstimate:
     try:
         return await request.app.state.rag.estimate_project(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+
+
+@protected.get("/projects/{project_id}/documents", response_model=DocumentLibrary)
+async def list_project_documents(request: Request, project_id: UUID) -> DocumentLibrary:
+    try:
+        return request.app.state.rag.document_library(project_id)
     except RecordNotFoundError as exc:
         raise _not_found("Projet") from exc
 

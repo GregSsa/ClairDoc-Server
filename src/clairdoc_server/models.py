@@ -116,6 +116,33 @@ class AskResponse(BaseModel):
     model: str
 
 
+class DocumentSummary(BaseModel):
+    job_id: UUID
+    name: str
+    source_relative_path: str
+    status: str
+    category: str
+    document_date: str | None = None
+    organization: str | None = None
+    people: list[str] = Field(default_factory=list)
+    amounts: list[str] = Field(default_factory=list)
+    chunks: int = 0
+
+
+class DocumentRelationship(BaseModel):
+    source_job_id: UUID
+    target_job_id: UUID
+    kind: str
+    label: str
+
+
+class DocumentLibrary(BaseModel):
+    project_id: UUID
+    documents: list[DocumentSummary]
+    categories: list[str]
+    relationships: list[DocumentRelationship]
+
+
 class OrganizationEntry(BaseModel):
     job_id: UUID
     original_filename: str
