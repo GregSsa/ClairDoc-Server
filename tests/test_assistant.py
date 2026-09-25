@@ -84,3 +84,29 @@ def test_write_tools_require_permission_and_stay_in_project(tmp_path: Path) -> N
         assert "sort du dossier" in str(error)
     else:
         raise AssertionError("La traversée de dossier aurait dû être refusée")
+
+
+def test_read_tools_are_limited_to_project_text_files(tmp_path: Path) -> None:
+    _, service, project_id, _ = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+
+    result, action = service._execute_tool(
+        project_uuid,
+        "read_project_text_file",
+        {"relative_path": "note.txt"},
+        False,
+    )
+    assert result["content"] == "Contenu du projet"
+    assert action.status == "completed"
+
+    try:
+        service._execute_tool(
+            project_uuid,
+            "read_project_text_file",
+            {"relative_path": "../secret.txt"},
+            False,
+        )
+    except ValueError as error:
+        assert "sort du dossier" in str(error)
+    else:
+        raise AssertionError("La lecture hors projet aurait dû être refusée")

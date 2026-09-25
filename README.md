@@ -33,6 +33,7 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Il exécute l
 - conversations multiples et historique persistant par projet ;
 - mémoire projet Markdown actualisée lors de l'indexation ;
 - outils IA pour rechercher, catégoriser, relier, copier, déplacer ou mettre à la corbeille ;
+- exploration contrôlée du dossier source et lecture bornée des fichiers texte ;
 - actions d'écriture limitées au dossier source, soumises à autorisation et journalisées.
 
 ## Prérequis

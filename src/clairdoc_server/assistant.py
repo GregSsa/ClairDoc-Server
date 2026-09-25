@@ -6,7 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from .models import AskResponse, AssistantAction, Citation, ConversationMessage
-from .rag import NoDocumentsError, ProjectIndexNotFoundError, cosine_similarity, keyword_similarity
+from .rag import cosine_similarity, keyword_similarity
 from .storage import LocalStorage
 
 ASSISTANT_INSTRUCTIONS = """Tu es l'assistant spécialisé d'un projet ClairDoc.
@@ -20,12 +20,36 @@ l'autorise. Explique brièvement chaque action réellement effectuée. Réponds 
 TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
+        "name": "list_project_documents",
+        "description": "Liste les documents connus avec leur identifiant, chemin et catégorie.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
         "name": "search_project_files",
         "description": "Recherche des fichiers par nom dans le dossier source du projet.",
         "parameters": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "read_project_text_file",
+        "description": "Lit un fichier texte situé dans le dossier source du projet.",
+        "parameters": {
+            "type": "object",
+            "properties": {"relative_path": {"type": "string"}},
+            "required": ["relative_path"],
             "additionalProperties": False,
         },
         "strict": True,
@@ -215,10 +239,8 @@ class AssistantService:
     ) -> list[tuple[float, dict[str, Any], dict[str, Any]]]:
         try:
             index = self.storage.read_index(project_id)
-        except FileNotFoundError as exc:
-            raise ProjectIndexNotFoundError(
-                "Le projet doit être indexé avant de poser une question."
-            ) from exc
+        except FileNotFoundError:
+            return []
         query = await self.rag._client().embeddings.create(
             model=str(index["embedding_model"]),
             input=question,
@@ -235,8 +257,6 @@ class AssistantService:
         selected = sorted(ranked, key=lambda item: item[0], reverse=True)[
             : top_k or self.rag.settings.rag_top_k
         ]
-        if not selected:
-            raise NoDocumentsError("L'index ne contient aucun extrait exploitable.")
         return selected
 
     @staticmethod
@@ -244,8 +264,11 @@ class AssistantService:
         parts = []
         for number, (_, document, chunk) in enumerate(selected, 1):
             page = f", page {chunk['page_number']}" if chunk.get("page_number") else ""
-            parts.append(f"[{number}] {document['document_name']}{page}\n{chunk['text']}")
-        return "\n\n".join(parts)
+            parts.append(
+                f"[{number}] {document['document_name']}{page} "
+                f"(job_id={document['job_id']})\n{chunk['text']}"
+            )
+        return "\n\n".join(parts) or "Aucun extrait indexé pour cette question."
 
     @staticmethod
     def _citations(selected: list[tuple[float, dict[str, Any], dict[str, Any]]]) -> list[Citation]:
@@ -264,12 +287,24 @@ class AssistantService:
     def _execute_tool(
         self, project_id: UUID, name: str, arguments: dict[str, Any], allow_write: bool
     ) -> tuple[dict[str, Any], AssistantAction]:
+        if name == "list_project_documents":
+            result = self._list_documents(project_id)
+            return result, AssistantAction(
+                tool=name,
+                status="completed",
+                summary=f"{len(result['documents'])} document(s) listé(s).",
+            )
         if name == "search_project_files":
             result = self._search_files(project_id, str(arguments["query"]))
             return result, AssistantAction(
                 tool=name,
                 status="completed",
                 summary=f"{len(result['files'])} fichier(s) trouvé(s).",
+            )
+        if name == "read_project_text_file":
+            result = self._read_text_file(project_id, str(arguments["relative_path"]))
+            return result, AssistantAction(
+                tool=name, status="completed", summary="Fichier texte consulté."
             )
         if not allow_write:
             summary = "Action non exécutée : autorisation requise dans l'interface."
@@ -421,6 +456,31 @@ class AssistantService:
             if len(files) >= 50:
                 break
         return {"ok": True, "files": files}
+
+    def _list_documents(self, project_id: UUID) -> dict[str, Any]:
+        try:
+            index = self.storage.read_index(project_id)
+        except FileNotFoundError:
+            index = {"documents": []}
+        documents = [
+            {
+                "job_id": str(item.get("job_id")),
+                "name": str(item.get("document_name")),
+                "path": str(item.get("source_relative_path")),
+                "category": str(item.get("metadata", {}).get("category") or "Autres"),
+            }
+            for item in index.get("documents", [])
+        ]
+        return {"ok": True, "documents": documents[:500]}
+
+    def _read_text_file(self, project_id: UUID, relative_path: str) -> dict[str, Any]:
+        root = self._project_root(project_id)
+        path = self._safe_destination(root, relative_path)
+        allowed = {".txt", ".md", ".csv", ".tsv", ".log", ".json", ".xml", ".yaml", ".yml"}
+        if not path.is_file() or path.suffix.lower() not in allowed:
+            raise ValueError("Ce fichier texte n'est pas lisible par l'assistant.")
+        content = path.read_text(encoding="utf-8", errors="replace")[:20000]
+        return {"ok": True, "path": path.relative_to(root).as_posix(), "content": content}
 
     def refresh_memory(self, project_id: UUID) -> None:
         project = self.storage.get_project(project_id)
