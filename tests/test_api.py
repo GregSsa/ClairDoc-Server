@@ -10,6 +10,7 @@ from clairdoc_server.main import create_app
 def make_client(tmp_path: Path, api_key: str | None = "test-secret") -> TestClient:
     settings = Settings(
         api_key=api_key,
+        openai_api_key="",
         data_dir=tmp_path / "data",
         ocr_command="missing-ocrmypdf-command",
     )
