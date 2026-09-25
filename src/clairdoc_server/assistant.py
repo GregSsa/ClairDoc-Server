@@ -164,6 +164,9 @@ class AssistantService:
         citations = self._citations(selected)
         context = self._format_context(selected)
         memory = self.storage.read_project_memory(project_id).content
+        if not memory.strip():
+            self.refresh_memory(project_id)
+            memory = self.storage.read_project_memory(project_id).content
         transcript = [
             {"role": message.role, "content": message.content}
             for message in conversation.messages[-20:]
