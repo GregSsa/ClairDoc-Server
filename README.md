@@ -19,6 +19,10 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Il exécute l
 - extraction du texte des PDF OCRisés, découpage et embeddings OpenAI ;
 - index sémantique JSON local, avec réutilisation des documents inchangés ;
 - questions/réponses RAG avec extraits sources.
+- ingestion PDF, TXT, Markdown, CSV, DOCX, XLSX, PPTX, EML et images ;
+- citations PDF avec numéro de page et métadonnées locales ;
+- recherche hybride embeddings + mots-clés ;
+- proposition de classement par catégorie et année.
 
 ## Prérequis
 
@@ -117,10 +121,14 @@ Le dossier `data` et le fichier `.env` sont exclus de Git.
 | `POST` | `/api/v1/ocr/jobs` | Envoyer un PDF et créer un travail |
 | `GET` | `/api/v1/ocr/jobs/{id}` | Lire l'état d'un travail |
 | `POST` | `/api/v1/ocr/jobs/{id}/retry` | Relancer un travail en échec |
+| `POST` | `/api/v1/document/jobs` | Envoyer un document pris en charge |
 | `GET` | `/api/v1/ocr/jobs/{id}/document` | Télécharger le PDF OCRisé |
 | `GET` | `/api/v1/ocr/jobs/{id}/text` | Télécharger le texte extrait |
 | `POST` | `/api/v1/projects/{id}/index` | Créer ou actualiser l'index sémantique |
 | `POST` | `/api/v1/projects/{id}/ask` | Poser une question sur l'index du projet |
+| `POST` | `/api/v1/projects/{id}/organization/plan` | Préparer un plan de classement |
+
+Les métadonnées automatiques (catégorie, date, organisme, personnes et montants) sont calculées localement à partir du texte extrait. Elles constituent des propositions à vérifier, pas des données administratives garanties.
 
 ## Qualité
 

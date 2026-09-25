@@ -18,6 +18,7 @@ class LocalStorage:
         self.logs_dir = self.root / "logs"
         self.indexes_dir = self.root / "indexes"
         self.prompts_dir = self.root / "prompts"
+        self.plans_dir = self.root / "plans"
 
     def initialize(self) -> None:
         for directory in (
@@ -26,6 +27,7 @@ class LocalStorage:
             self.logs_dir,
             self.indexes_dir,
             self.prompts_dir,
+            self.plans_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -76,8 +78,17 @@ class LocalStorage:
                 continue
         return sorted(projects, key=lambda project: project.updated_at, reverse=True)
 
-    def create_job(self, original_filename: str, project_id: UUID | None) -> OcrJob:
-        job = OcrJob(original_filename=original_filename, project_id=project_id)
+    def create_job(
+        self,
+        original_filename: str,
+        project_id: UUID | None,
+        source_relative_path: str | None = None,
+    ) -> OcrJob:
+        job = OcrJob(
+            original_filename=original_filename,
+            project_id=project_id,
+            source_relative_path=source_relative_path,
+        )
         self.job_dir(job.id).mkdir(parents=True, exist_ok=False)
         self.save_job(job)
         return job
@@ -131,6 +142,13 @@ class LocalStorage:
     def input_path(self, job_id: UUID) -> Path:
         return self.job_dir(job_id) / "input.pdf"
 
+    def source_path(self, job_id: UUID) -> Path:
+        job = self.get_job(job_id)
+        suffix = Path(job.original_filename).suffix.lower() or ".bin"
+        candidate = self.job_dir(job_id) / f"input{suffix}"
+        legacy = self.input_path(job_id)
+        return candidate if candidate.exists() or not legacy.exists() else legacy
+
     def output_path(self, job_id: UUID) -> Path:
         return self.job_dir(job_id) / "output.pdf"
 
@@ -148,3 +166,9 @@ class LocalStorage:
 
     def rag_prompt_path(self) -> Path:
         return self.prompts_dir / "rag-system.txt"
+
+    def plan_path(self, project_id: UUID) -> Path:
+        return self.plans_dir / f"{project_id}.json"
+
+    def write_plan(self, project_id: UUID, payload: dict[str, object]) -> None:
+        self._write_json(self.plan_path(project_id), payload)

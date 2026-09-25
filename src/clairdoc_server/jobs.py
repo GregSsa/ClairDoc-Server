@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import UUID
 
 from .config import Settings
+from .extractors import IMAGE_EXTENSIONS, extract_document_text
 from .models import JobStatus, utc_now
 from .storage import LocalStorage, RecordNotFoundError
 
@@ -97,6 +98,12 @@ class OcrJobManager:
             return str(configured.resolve())
         return shutil.which(self.settings.ocr_command)
 
+    def _resolve_tesseract(self) -> str | None:
+        configured = Path(self.settings.tesseract_command)
+        if configured.is_file():
+            return str(configured.resolve())
+        return shutil.which(self.settings.tesseract_command)
+
     def _build_arguments(self, command: str, job_id: UUID) -> list[str]:
         return [
             command,
@@ -119,6 +126,10 @@ class OcrJobManager:
         job = self.storage.get_job(job_id)
         await self._wait_if_paused(job.project_id)
         job = self.storage.get_job(job_id)
+        source_path = self.storage.source_path(job_id)
+        if source_path.suffix.lower() != ".pdf":
+            await self._process_non_pdf(job_id, source_path)
+            return
         command = self._resolve_command()
         if command is None:
             job.status = JobStatus.FAILED
@@ -168,3 +179,45 @@ class OcrJobManager:
         job.completed_at = utc_now()
         job.error = diagnostic[-4000:] or f"OCRmyPDF a retourné le code {process.returncode}."
         self.storage.save_job(job)
+
+    async def _process_non_pdf(self, job_id: UUID, source_path: Path) -> None:
+        job = self.storage.get_job(job_id)
+        job.status = JobStatus.RUNNING
+        job.started_at = utc_now()
+        job.error = None
+        self.storage.save_job(job)
+        self.storage.text_path(job_id).unlink(missing_ok=True)
+
+        try:
+            if source_path.suffix.lower() in IMAGE_EXTENSIONS:
+                command = self._resolve_tesseract()
+                if command is None:
+                    raise RuntimeError("Tesseract est introuvable sur le serveur.")
+                process = await asyncio.create_subprocess_exec(
+                    command,
+                    str(source_path),
+                    "stdout",
+                    "-l",
+                    self.settings.ocr_languages,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=self.settings.ocr_timeout_seconds
+                )
+                if process.returncode != 0:
+                    diagnostic = stderr.decode("utf-8", errors="replace").strip()
+                    raise RuntimeError(diagnostic[-4000:] or "Tesseract a échoué.")
+                text = stdout.decode("utf-8", errors="replace")
+            else:
+                text = await asyncio.to_thread(extract_document_text, source_path)
+            self.storage.text_path(job_id).write_text(text, encoding="utf-8")
+            job.status = JobStatus.COMPLETED
+            job.completed_at = utc_now()
+            self.storage.save_job(job)
+            logger.info("Extraction terminée : %s", job_id)
+        except (TimeoutError, OSError, ValueError, RuntimeError) as exc:
+            job.status = JobStatus.FAILED
+            job.completed_at = utc_now()
+            job.error = str(exc)[-4000:] or "Extraction du document impossible."
+            self.storage.save_job(job)

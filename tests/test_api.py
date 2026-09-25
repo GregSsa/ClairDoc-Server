@@ -154,3 +154,26 @@ def test_non_pdf_content_is_rejected(tmp_path: Path) -> None:
         )
 
     assert response.status_code == 415
+
+
+def test_text_document_is_extracted(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    with make_client(tmp_path) as client:
+        project = client.post("/api/v1/projects", headers=headers, json={"name": "Archives"})
+        response = client.post(
+            f"/api/v1/document/jobs?project_id={project.json()['id']}&source_relative_path=notes/test.txt",
+            headers=headers,
+            files={"file": ("test.txt", "Bonjour ClairDoc", "text/plain")},
+        )
+        job_id = response.json()["id"]
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            job = client.get(f"/api/v1/ocr/jobs/{job_id}", headers=headers)
+            if job.json()["status"] == "completed":
+                break
+            sleep(0.01)
+        extracted = client.get(f"/api/v1/ocr/jobs/{job_id}/text", headers=headers)
+
+    assert response.status_code == 202
+    assert job.json()["source_relative_path"] == "notes/test.txt"
+    assert extracted.text == "Bonjour ClairDoc"

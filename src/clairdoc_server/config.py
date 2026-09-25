@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8787, ge=1, le=65535)
     ocr_command: str = "ocrmypdf"
+    tesseract_command: str = "tesseract"
     ocr_languages: str = "fra+eng"
     ocr_workers: int = Field(default=1, ge=1, le=8)
     ocr_timeout_seconds: int = Field(default=7200, ge=60)

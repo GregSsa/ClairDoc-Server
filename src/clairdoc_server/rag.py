@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
 import math
+import re
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,27 @@ Réponds uniquement à partir des extraits de documents fournis.
 Si les extraits ne permettent pas de répondre, dis-le clairement sans inventer.
 Indique tes sources avec les repères [1], [2], etc. présents dans le contexte.
 Réponds en français, de façon simple et précise."""
+
+CATEGORY_RULES = {
+    "Factures": ("facture", "invoice", "total ttc", "montant dû"),
+    "Banque": ("banque", "relevé de compte", "iban", "prélèvement"),
+    "Impôts": ("impôt", "fiscal", "déclaration de revenus", "taxe foncière"),
+    "Assurances": ("assurance", "sinistre", "contrat d'assurance", "cotisation"),
+    "Santé": ("santé", "médecin", "ordonnance", "mutuelle", "remboursement"),
+    "Logement": ("loyer", "bail", "propriétaire", "locataire", "électricité", "gaz"),
+    "Emploi": ("bulletin de paie", "salaire", "employeur", "contrat de travail"),
+    "Identité": ("passeport", "carte nationale", "état civil", "acte de naissance"),
+    "Courriers": ("objet :", "madame", "monsieur", "courrier"),
+}
+TOKEN_PATTERN = re.compile(r"[\wÀ-ÿ]{2,}", re.UNICODE)
+DATE_PATTERN = re.compile(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b")
+ISO_DATE_PATTERN = re.compile(r"\b(20\d{2}|19\d{2})-(\d{2})-(\d{2})\b")
+AMOUNT_PATTERN = re.compile(
+    r"\b\d{1,3}(?:[ .]\d{3})*(?:[,.]\d{2})?\s?(?:€|EUR)(?=\s|$)", re.I
+)
+PERSON_PATTERN = re.compile(
+    r"\b(?:M(?:me|lle)?\.?|Monsieur|Madame)\s+([A-ZÀ-ÖØ-Ý][\wÀ-ÿ'-]+(?:\s+[A-ZÀ-ÖØ-Ý][\wÀ-ÿ'-]+){0,3})"
+)
 
 
 class OpenAIConfigurationError(RuntimeError):
@@ -39,7 +62,6 @@ def chunk_text(text: str, size: int, overlap: int) -> list[str]:
         return []
     if overlap >= size:
         overlap = size // 4
-
     chunks: list[str] = []
     start = 0
     while start < len(normalized):
@@ -64,9 +86,62 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     return numerator / (left_norm * right_norm) if left_norm and right_norm else 0.0
 
 
-def _extract_pdf_text(path: Path) -> str:
+def _tokens(text: str) -> set[str]:
+    normalized = unicodedata.normalize("NFKD", text.lower())
+    normalized = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
+    return set(TOKEN_PATTERN.findall(normalized))
+
+
+def keyword_similarity(question: str, text: str) -> float:
+    query_tokens = _tokens(question)
+    text_tokens = _tokens(text)
+    if not query_tokens or not text_tokens:
+        return 0.0
+    return len(query_tokens & text_tokens) / len(query_tokens)
+
+
+def _extract_pdf_pages(path: Path) -> list[tuple[int | None, str]]:
     reader = PdfReader(path)
-    return "\n\n".join(page.extract_text() or "" for page in reader.pages).strip()
+    return [(number, page.extract_text() or "") for number, page in enumerate(reader.pages, 1)]
+
+
+def extract_metadata(text: str, filename: str) -> dict[str, Any]:
+    sample = text[:12000]
+    lowered = f"{filename}\n{sample}".lower()
+    category = "Autres"
+    for candidate, keywords in CATEGORY_RULES.items():
+        if any(keyword in lowered for keyword in keywords):
+            category = candidate
+            break
+
+    document_date: str | None = None
+    if match := ISO_DATE_PATTERN.search(sample):
+        document_date = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+    elif match := DATE_PATTERN.search(sample):
+        day, month, year = match.groups()
+        if len(year) == 2:
+            year = f"20{year}"
+        document_date = f"{year}-{int(month):02d}-{int(day):02d}"
+
+    organization = None
+    for line in (line.strip() for line in sample.splitlines()[:30]):
+        if 3 <= len(line) <= 80 and any(
+            marker in line.lower()
+            for marker in ("sarl", "sas", "assurance", "banque", "mutuelle", "caisse", "service")
+        ):
+            organization = line
+            break
+
+    return {
+        "category": category,
+        "document_type": category.removesuffix("s"),
+        "date": document_date,
+        "organization": organization,
+        "people": sorted(set(PERSON_PATTERN.findall(sample)))[:10],
+        "amounts": list(dict.fromkeys(AMOUNT_PATTERN.findall(sample)))[:10],
+    }
 
 
 class RagService:
@@ -104,19 +179,18 @@ class RagService:
         async with self._index_lock:
             completed_jobs = [
                 job
-                for job in self.storage.iter_jobs()
-                if job.project_id == project_id
-                and job.status == JobStatus.COMPLETED
-                and self.storage.output_path(job.id).is_file()
+                for job in self.storage.jobs_for_project(project_id)
+                if job.status == JobStatus.COMPLETED and self.storage.text_path(job.id).is_file()
             ]
             if not completed_jobs:
-                raise NoDocumentsError("Aucun document OCRisé n'est disponible pour ce projet.")
+                raise NoDocumentsError("Aucun document analysé n'est disponible pour ce projet.")
 
             existing_documents: dict[str, Any] = {}
             try:
                 existing = self.storage.read_index(project_id)
                 same_configuration = (
-                    existing.get("embedding_model") == self.settings.embedding_model
+                    existing.get("version") == 2
+                    and existing.get("embedding_model") == self.settings.embedding_model
                     and existing.get("embedding_dimensions") == self.settings.embedding_dimensions
                     and existing.get("chunk_chars") == self.settings.rag_chunk_chars
                     and existing.get("chunk_overlap") == self.settings.rag_chunk_overlap
@@ -133,48 +207,60 @@ class RagService:
             documents: list[dict[str, Any]] = []
             reused = 0
             indexed = 0
-            for job in sorted(completed_jobs, key=lambda item: item.created_at):
-                pdf_path = self.storage.output_path(job.id)
-                document_hash = await asyncio.to_thread(_file_hash, pdf_path)
+            for job in completed_jobs:
+                source_path = self.storage.source_path(job.id)
+                document_hash = await asyncio.to_thread(_file_hash, source_path)
                 previous = existing_documents.get(str(job.id))
                 if previous and previous.get("document_hash") == document_hash:
                     documents.append(previous)
                     reused += 1
                     continue
 
-                text = await asyncio.to_thread(_extract_pdf_text, pdf_path)
-                if not text and self.storage.text_path(job.id).is_file():
+                if self.storage.output_path(job.id).is_file():
+                    pages = await asyncio.to_thread(
+                        _extract_pdf_pages, self.storage.output_path(job.id)
+                    )
+                else:
                     text = self.storage.text_path(job.id).read_text(
                         encoding="utf-8", errors="replace"
                     )
-                chunks = chunk_text(
-                    text,
-                    self.settings.rag_chunk_chars,
-                    self.settings.rag_chunk_overlap,
-                )
-                if not chunks:
+                    pages = [(None, text)]
+                full_text = "\n".join(text for _, text in pages)
+                metadata = extract_metadata(full_text, job.original_filename)
+                chunk_records: list[dict[str, Any]] = []
+                chunk_texts: list[str] = []
+                for page_number, page_text in pages:
+                    values = chunk_text(
+                        page_text,
+                        self.settings.rag_chunk_chars,
+                        self.settings.rag_chunk_overlap,
+                    )
+                    for value in values:
+                        chunk_records.append(
+                            {"index": len(chunk_records), "page_number": page_number, "text": value}
+                        )
+                        chunk_texts.append(value)
+                if not chunk_records:
                     continue
-                embeddings = await self._embeddings(chunks)
+                embeddings = await self._embeddings(chunk_texts)
+                for record, embedding in zip(chunk_records, embeddings, strict=True):
+                    record["embedding"] = embedding
                 documents.append(
                     {
                         "job_id": str(job.id),
                         "document_name": job.original_filename,
+                        "source_relative_path": job.source_relative_path or job.original_filename,
                         "document_hash": document_hash,
-                        "chunks": [
-                            {"index": position, "text": chunk, "embedding": embedding}
-                            for position, (chunk, embedding) in enumerate(
-                                zip(chunks, embeddings, strict=True)
-                            )
-                        ],
+                        "metadata": metadata,
+                        "chunks": chunk_records,
                     }
                 )
                 indexed += 1
 
             if not documents:
                 raise NoDocumentsError("Aucun texte exploitable n'a été trouvé dans les documents.")
-
             payload: dict[str, object] = {
-                "version": 1,
+                "version": 2,
                 "project_id": str(project_id),
                 "created_at": datetime.now(UTC).isoformat(),
                 "embedding_model": self.settings.embedding_model,
@@ -199,31 +285,32 @@ class RagService:
             raise ProjectIndexNotFoundError(
                 "Le projet doit être indexé avant de poser une question."
             ) from exc
-
-        model = str(index["embedding_model"])
-        dimensions = int(index["embedding_dimensions"])
         client = self._client()
         query = await client.embeddings.create(
-            model=model,
+            model=str(index["embedding_model"]),
             input=question,
-            dimensions=dimensions,
+            dimensions=int(index["embedding_dimensions"]),
         )
         query_vector = query.data[0].embedding
         ranked: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
         for document in index.get("documents", []):
+            metadata_text = " ".join(str(value) for value in document.get("metadata", {}).values())
             for chunk in document.get("chunks", []):
-                ranked.append(
-                    (cosine_similarity(query_vector, chunk["embedding"]), document, chunk)
-                )
-        limit = top_k or self.settings.rag_top_k
-        selected = sorted(ranked, key=lambda item: item[0], reverse=True)[:limit]
+                vector_score = (cosine_similarity(query_vector, chunk["embedding"]) + 1) / 2
+                keyword_score = keyword_similarity(question, f"{chunk['text']} {metadata_text}")
+                ranked.append((0.75 * vector_score + 0.25 * keyword_score, document, chunk))
+        selected = sorted(ranked, key=lambda item: item[0], reverse=True)[
+            : top_k or self.settings.rag_top_k
+        ]
         if not selected:
             raise NoDocumentsError("L'index ne contient aucun extrait exploitable.")
 
-        context_parts = [
-            f"[{number}] Document: {document['document_name']}\n{chunk['text']}"
-            for number, (_, document, chunk) in enumerate(selected, start=1)
-        ]
+        context_parts = []
+        for number, (_, document, chunk) in enumerate(selected, start=1):
+            page = f", page {chunk['page_number']}" if chunk.get("page_number") else ""
+            context_parts.append(
+                f"[{number}] Document: {document['document_name']}{page}\n{chunk['text']}"
+            )
         response = await client.responses.create(
             model=self.settings.llm_model,
             instructions=self._system_prompt(),
@@ -235,6 +322,7 @@ class RagService:
                 document_name=str(document["document_name"]),
                 job_id=UUID(str(document["job_id"])),
                 chunk_index=int(chunk["index"]),
+                page_number=chunk.get("page_number"),
                 score=round(score, 4),
                 excerpt=str(chunk["text"])[:300],
             )

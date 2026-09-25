@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from openai import OpenAIError
 
 from . import __version__
+from .extractors import SUPPORTED_EXTENSIONS
 from .models import (
     AskRequest,
     AskResponse,
@@ -16,6 +17,7 @@ from .models import (
     IndexResponse,
     JobStatus,
     OcrJob,
+    OrganizationPlan,
     Project,
     ProjectCreate,
     ProjectOcrState,
@@ -135,11 +137,48 @@ async def ask_project(request: Request, project_id: UUID, payload: AskRequest) -
         raise _rag_error(exc) from exc
 
 
+@protected.post("/projects/{project_id}/organization/plan", response_model=OrganizationPlan)
+async def create_organization_plan(request: Request, project_id: UUID) -> OrganizationPlan:
+    try:
+        return request.app.state.organization.build_plan(project_id)
+    except RecordNotFoundError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Le projet doit être indexé avant de préparer le classement.",
+        ) from exc
+
+
 @protected.post("/ocr/jobs", response_model=OcrJob, status_code=status.HTTP_202_ACCEPTED)
 async def create_ocr_job(
     request: Request,
     file: Annotated[UploadFile, File(description="Document PDF à OCRiser")],
     project_id: Annotated[UUID | None, Query()] = None,
+) -> OcrJob:
+    return await _create_document_job(request, file, project_id, {".pdf"}, None)
+
+
+@protected.post("/document/jobs", response_model=OcrJob, status_code=status.HTTP_202_ACCEPTED)
+async def create_document_job(
+    request: Request,
+    file: Annotated[UploadFile, File(description="Document à analyser")],
+    project_id: Annotated[UUID | None, Query()] = None,
+    source_relative_path: Annotated[str | None, Query(max_length=2000)] = None,
+) -> OcrJob:
+    return await _create_document_job(
+        request,
+        file,
+        project_id,
+        SUPPORTED_EXTENSIONS,
+        source_relative_path,
+    )
+
+
+async def _create_document_job(
+    request: Request,
+    file: UploadFile,
+    project_id: UUID | None,
+    allowed_extensions: set[str],
+    source_relative_path: str | None,
 ) -> OcrJob:
     storage = _storage(request)
     if project_id is not None:
@@ -149,11 +188,21 @@ async def create_ocr_job(
             raise _not_found("Projet") from exc
 
     original_filename = Path(file.filename or "document.pdf").name
-    if Path(original_filename).suffix.lower() != ".pdf":
-        raise HTTPException(status_code=415, detail="Seuls les fichiers PDF sont acceptés.")
+    extension = Path(original_filename).suffix.lower()
+    if extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=415,
+            detail="Ce format de document n'est pas pris en charge.",
+        )
 
-    job = storage.create_job(original_filename, project_id)
-    input_path = storage.input_path(job.id)
+    if source_relative_path:
+        relative = Path(source_relative_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise HTTPException(status_code=400, detail="Chemin relatif source invalide.")
+        source_relative_path = relative.as_posix()
+
+    job = storage.create_job(original_filename, project_id, source_relative_path)
+    input_path = storage.source_path(job.id)
     total_bytes = 0
     signature = b""
     digest = hashlib.sha256()
@@ -180,7 +229,7 @@ async def create_ocr_job(
     finally:
         await file.close()
 
-    if signature != b"%PDF-":
+    if extension == ".pdf" and signature != b"%PDF-":
         input_path.unlink(missing_ok=True)
         job.status = JobStatus.FAILED
         job.error = "Le contenu envoyé n'est pas un PDF valide."
@@ -216,8 +265,8 @@ async def retry_ocr_job(request: Request, job_id: UUID) -> OcrJob:
         raise _not_found("Travail OCR") from exc
     if job.status != JobStatus.FAILED:
         raise HTTPException(status_code=409, detail="Seul un travail en échec peut être relancé.")
-    if not storage.input_path(job_id).is_file():
-        raise _not_found("PDF source")
+    if not storage.source_path(job_id).is_file():
+        raise _not_found("Document source")
     await request.app.state.jobs.retry(job_id)
     return storage.get_job(job_id)
 

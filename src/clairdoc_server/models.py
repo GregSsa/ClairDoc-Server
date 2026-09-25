@@ -34,6 +34,7 @@ class OcrJob(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     project_id: UUID | None = None
     original_filename: str
+    source_relative_path: str | None = None
     status: JobStatus = JobStatus.QUEUED
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -80,6 +81,7 @@ class Citation(BaseModel):
     document_name: str
     job_id: UUID
     chunk_index: int
+    page_number: int | None = None
     score: float
     excerpt: str
 
@@ -88,3 +90,20 @@ class AskResponse(BaseModel):
     answer: str
     citations: list[Citation]
     model: str
+
+
+class OrganizationEntry(BaseModel):
+    job_id: UUID
+    original_filename: str
+    source_relative_path: str
+    suggested_path: str
+    category: str
+    document_date: str | None = None
+    organization: str | None = None
+    reason: str
+
+
+class OrganizationPlan(BaseModel):
+    project_id: UUID
+    created_at: datetime = Field(default_factory=utc_now)
+    entries: list[OrganizationEntry]

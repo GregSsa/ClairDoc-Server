@@ -8,9 +8,12 @@ authors = [{ name = "GregSsa" }]
 dependencies = [
   "fastapi>=0.116,<1",
   "openai>=2,<3",
+  "openpyxl>=3.1,<4",
   "pypdf>=6,<7",
   "pydantic-settings>=2.10,<3",
+  "python-docx>=1.2,<2",
   "python-multipart>=0.0.20,<1",
+  "python-pptx>=1.0,<2",
   "uvicorn[standard]>=0.35,<1",
 ]
 
