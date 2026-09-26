@@ -49,3 +49,39 @@ def test_legacy_index_keeps_openai_provider(tmp_path: Path) -> None:
     )
     assert vector == [1.0, 0.0]
     assert calls[0]["model"] == "legacy-model"
+
+
+def test_empty_document_indexes_name_and_refreshes_when_text_changes(tmp_path: Path) -> None:
+    storage = LocalStorage(tmp_path)
+    storage.initialize()
+    storage.update_runtime({"embedding_provider": "local"})
+    project = storage.create_project(ProjectCreate(name="Maison"))
+    job = storage.create_job("Plan maison.txt", project.id, "Plan maison.txt")
+    storage.source_path(job.id).write_text("", encoding="utf-8")
+    storage.text_path(job.id).write_text("", encoding="utf-8")
+    job.status = JobStatus.COMPLETED
+    storage.save_job(job)
+    rag = RagService(storage, Settings(data_dir=tmp_path, api_key="test"))
+    calls = []
+
+    def embed(texts, model, query):
+        calls.extend(texts)
+        return [[1.0] * 384 for _ in texts]
+
+    rag.embeddings._embed_local = embed
+    result = asyncio.run(rag.index_project(project.id))
+    assert calls == ["Plan maison.txt"]
+    assert result.documents_indexed == 1
+    assert result.documents_name_only == 1
+    doc = storage.read_index(project.id)["documents"][0]
+    assert doc["indexing_mode"] == "name_only"
+    assert "Plan maison.txt" in doc["chunks"][0]["text"]
+    assert "contenu inconnu" in doc["chunks"][0]["text"]
+    assert rag.document_library(project.id).documents[0].status == "indexed_name"
+    reused = asyncio.run(rag.index_project(project.id))
+    assert reused.documents_reused == 1
+    storage.text_path(job.id).write_text("Texte récupéré par OCR", encoding="utf-8")
+    changed = asyncio.run(rag.index_project(project.id))
+    assert changed.documents_indexed == 1
+    assert changed.documents_name_only == 0
+    assert rag.document_library(project.id).documents[0].status == "indexed"

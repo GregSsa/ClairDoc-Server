@@ -2,6 +2,8 @@ import asyncio
 import contextlib
 import logging
 import shutil
+import tempfile
+import zipfile
 from pathlib import Path
 from uuid import UUID
 
@@ -13,6 +15,7 @@ from .models import JobStatus, utc_now
 from .storage import LocalStorage, RecordNotFoundError
 
 logger = logging.getLogger(__name__)
+EXTRACTION_VERSION = 2
 
 
 class OcrJobManager:
@@ -152,18 +155,9 @@ class OcrJobManager:
 
         arguments = self._build_arguments(command, job_id)
 
-        process = await asyncio.create_subprocess_exec(
-            *arguments,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=self.settings.ocr_timeout_seconds
-            )
+            code, stdout, stderr = await self._run_text_process(arguments)
         except TimeoutError:
-            process.kill()
-            await process.communicate()
             job.status = JobStatus.FAILED
             job.completed_at = utc_now()
             job.error = "Le délai maximal du traitement OCR a été dépassé."
@@ -172,9 +166,11 @@ class OcrJobManager:
 
         diagnostic = (stderr or stdout).decode("utf-8", errors="replace").strip()
         (self.storage.job_dir(job_id) / "ocr.log").write_text(diagnostic, encoding="utf-8")
-        if process.returncode == 0:
+        if code == 0:
             try:
-                await asyncio.to_thread(self._extract_pdf_text, job_id)
+                text = await asyncio.to_thread(self._extract_pdf_text, job_id)
+                if not text.strip():
+                    text = await self._redo_pdf_text(command, job_id)
             except Exception as exc:
                 job.status = JobStatus.FAILED
                 job.completed_at = utc_now()
@@ -184,16 +180,20 @@ class OcrJobManager:
             job.status = JobStatus.COMPLETED
             job.completed_at = utc_now()
             job.error = None
+            job.text_extraction_version = EXTRACTION_VERSION
+            job.text_warning = (
+                None if text.strip() else "Aucun texte récupéré : indexation par nom uniquement."
+            )
             self.storage.save_job(job)
             logger.info("Travail OCR terminé : %s", job_id)
             return
 
         job.status = JobStatus.FAILED
         job.completed_at = utc_now()
-        job.error = diagnostic[-4000:] or f"OCRmyPDF a retourné le code {process.returncode}."
+        job.error = diagnostic[-4000:] or f"OCRmyPDF a retourné le code {code}."
         self.storage.save_job(job)
 
-    def _extract_pdf_text(self, job_id: UUID) -> None:
+    def _extract_pdf_text(self, job_id: UUID) -> str:
         # The OCR sidecar omits pages with existing text. Read the whole resulting PDF.
         reader = PdfReader(self.storage.output_path(job_id))
         parts = [page.extract_text() or "" for page in reader.pages]
@@ -202,9 +202,102 @@ class OcrJobManager:
             if value is not None:
                 parts.append(f"{name}: {value}")
         text = "\n\f\n".join(parts)
-        if not text.strip():
-            raise ValueError("Aucun texte exploitable détecté dans le PDF.")
         self.storage.text_path(job_id).write_text(text, encoding="utf-8")
+        return text
+
+    async def _run_text_process(self, arguments: list[str]) -> tuple[int, bytes, bytes]:
+        process = await asyncio.create_subprocess_exec(
+            *arguments, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=self.settings.ocr_timeout_seconds
+            )
+        except (TimeoutError, asyncio.CancelledError):
+            if process.returncode is None:
+                process.kill()
+            await process.communicate()
+            raise
+        return process.returncode or 0, stdout, stderr
+
+    async def _redo_pdf_text(self, command: str, job_id: UUID) -> str:
+        # Redo cannot be combined with deskew/other image processing. Keep originals intact.
+        with tempfile.TemporaryDirectory(
+            prefix="redo-", dir=self.storage.job_dir(job_id)
+        ) as folder:
+            output = Path(folder) / "output.pdf"
+            code, _, stderr = await self._run_text_process(
+                [
+                    command,
+                    "--redo-ocr",
+                    "--output-type",
+                    "pdf",
+                    "--optimize",
+                    "0",
+                    "-l",
+                    self.settings.ocr_languages,
+                    str(self.storage.input_path(job_id)),
+                    str(output),
+                ]
+            )
+            with (self.storage.job_dir(job_id) / "ocr.log").open("a", encoding="utf-8") as log:
+                log.write("\nREPRISE OCR\n" + stderr.decode("utf-8", errors="replace"))
+            if code != 0:
+                raise RuntimeError(
+                    "La reprise OCR a échoué : " + stderr.decode("utf-8", errors="replace")[-3000:]
+                )
+            output.replace(self.storage.output_path(job_id))
+        return await asyncio.to_thread(self._extract_pdf_text, job_id)
+
+    async def _ocr_image(self, path: Path) -> str:
+        command = self._resolve_tesseract()
+        if command is None:
+            raise RuntimeError("Tesseract est introuvable sur le serveur.")
+        code, stdout, stderr = await self._run_text_process(
+            [command, str(path), "stdout", "-l", self.settings.ocr_languages]
+        )
+        if code != 0:
+            raise RuntimeError(
+                stderr.decode("utf-8", errors="replace")[-4000:] or "Tesseract a échoué."
+            )
+        return stdout.decode("utf-8", errors="replace")
+
+    async def _docx_image_text(self, source: Path, job_id: UUID) -> str:
+        parts = []
+        with zipfile.ZipFile(source) as archive:
+            for number, info in enumerate(archive.infolist()):
+                suffix = Path(info.filename).suffix.lower()
+                if not info.filename.startswith("word/media/") or suffix not in IMAGE_EXTENSIONS:
+                    continue
+                if info.file_size > self.settings.max_upload_bytes:
+                    raise ValueError("Une image intégrée au Word dépasse la limite de taille.")
+                with tempfile.TemporaryDirectory(
+                    prefix="image-", dir=self.storage.job_dir(job_id)
+                ) as folder:
+                    image = Path(folder) / f"image-{number}{suffix}"
+                    image.write_bytes(archive.read(info))
+                    text = await self._ocr_image(image)
+                if text.strip():
+                    parts.append(f"Image intégrée {number + 1}\n{text}")
+        return "\n\n".join(parts)
+
+    async def recover_project_text(self, project_id: UUID) -> None:
+        # Migrate previously completed imports once, without reimporting or touching originals.
+        for job in self.storage.jobs_for_project(project_id):
+            if (
+                job.status != JobStatus.COMPLETED
+                or job.text_extraction_version >= EXTRACTION_VERSION
+            ):
+                continue
+            source = self.storage.source_path(job.id)
+            if source.suffix.lower() == ".pdf" and self.storage.output_path(job.id).is_file():
+                text = await asyncio.to_thread(self._extract_pdf_text, job.id)
+                if text.strip():
+                    job.text_extraction_version = EXTRACTION_VERSION
+                    job.text_warning = None
+                    self.storage.save_job(job)
+                    continue
+            await self._process(job.id)
 
     async def _process_non_pdf(self, job_id: UUID, source_path: Path) -> None:
         job = self.storage.get_job(job_id)
@@ -216,30 +309,19 @@ class OcrJobManager:
 
         try:
             if source_path.suffix.lower() in IMAGE_EXTENSIONS:
-                command = self._resolve_tesseract()
-                if command is None:
-                    raise RuntimeError("Tesseract est introuvable sur le serveur.")
-                process = await asyncio.create_subprocess_exec(
-                    command,
-                    str(source_path),
-                    "stdout",
-                    "-l",
-                    self.settings.ocr_languages,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=self.settings.ocr_timeout_seconds
-                )
-                if process.returncode != 0:
-                    diagnostic = stderr.decode("utf-8", errors="replace").strip()
-                    raise RuntimeError(diagnostic[-4000:] or "Tesseract a échoué.")
-                text = stdout.decode("utf-8", errors="replace")
+                text = await self._ocr_image(source_path)
             else:
                 text = await asyncio.to_thread(extract_document_text, source_path)
+                if source_path.suffix.lower() == ".docx":
+                    image_text = await self._docx_image_text(source_path, job_id)
+                    text = "\n\n".join(part for part in (text, image_text) if part.strip())
             self.storage.text_path(job_id).write_text(text, encoding="utf-8")
             job.status = JobStatus.COMPLETED
             job.completed_at = utc_now()
+            job.text_extraction_version = EXTRACTION_VERSION
+            job.text_warning = (
+                None if text.strip() else "Aucun texte récupéré : indexation par nom uniquement."
+            )
             self.storage.save_job(job)
             logger.info("Extraction terminée : %s", job_id)
         except (TimeoutError, OSError, ValueError, RuntimeError) as exc:

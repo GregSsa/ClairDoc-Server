@@ -4,6 +4,7 @@ import logging
 from uuid import UUID
 
 from .config import Settings
+from .jobs import OcrJobManager
 from .models import IndexTask, JobStatus, utc_now
 from .rag import RagService
 from .storage import LocalStorage, RecordNotFoundError
@@ -82,6 +83,7 @@ class IndexJobManager:
         task.error = None
         self.storage.save_index_task(task)
         try:
+            await OcrJobManager(self.storage, self.settings).recover_project_text(task.project_id)
             estimate = await self.rag.estimate_project(task.project_id)
             task.estimate = estimate
             self.storage.save_index_task(task)

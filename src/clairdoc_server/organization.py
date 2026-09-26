@@ -24,7 +24,7 @@ class OrganizationService:
     async def suggest_names(self, project_id: UUID, rag: object) -> dict[str, str]:
         index = self.storage.read_index(project_id)
         names = {}
-        documents = index.get("documents", [])
+        documents = [d for d in index.get("documents", []) if d.get("indexing_mode") != "name_only"]
         for start in range(0, len(documents), 10):
             batch = documents[start : start + 10]
             data = [
@@ -105,7 +105,7 @@ class OrganizationService:
                 stem_parts.append(str(organization))
             stem_parts.append(Path(original).stem)
             stem = _safe_component("_".join(stem_parts), "document")
-            if not rename_files:
+            if not rename_files or document.get("indexing_mode") == "name_only":
                 stem = Path(original).stem
                 extension = Path(original).suffix
             elif names:

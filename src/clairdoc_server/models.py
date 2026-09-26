@@ -51,6 +51,8 @@ class OcrJob(BaseModel):
     input_bytes: int = 0
     content_sha256: str | None = None
     error: str | None = None
+    text_extraction_version: int = 0
+    text_warning: str | None = None
 
 
 class ProjectOcrState(BaseModel):
@@ -102,6 +104,7 @@ class IndexResponse(BaseModel):
     documents_reused: int
     chunks_indexed: int
     embedding_model: str
+    documents_name_only: int = 0
 
 
 class IndexEstimate(BaseModel):
@@ -214,6 +217,7 @@ class DocumentSummary(BaseModel):
     people: list[str] = Field(default_factory=list)
     amounts: list[str] = Field(default_factory=list)
     chunks: int = 0
+    text_warning: str | None = None
 
 
 class DocumentRelationship(BaseModel):

@@ -204,6 +204,22 @@ suppression déplace le fichier dans `.clairdoc/trash` au lieu de l'effacer déf
 
 ### Diagnostics d'import
 
+Lors de l'indexation, les anciens imports sont réextraits une fois si nécessaire.
+Un PDF sans texte exploitable après le passage normal est repris avec `--redo-ocr`,
+sans redressement ni rastérisation forcée. Les tableaux Word sont lus et leurs images
+PNG/JPEG/TIFF/BMP/WebP sont analysées par Tesseract localement. Les originaux sont conservés.
+
+Si l'OCR réussit sans produire de texte (photo, dessin, plan…), le document est tout
+de même indexé : son embedding est calculé uniquement sur son nom. L'index indique
+`indexing_mode=name_only`, l'application affiche **Indexé · nom seul**, et le contexte
+de l'assistant précise que le contenu est inconnu. Ce mode ne permet pas une recherche
+sur le contenu de l'image. Une erreur technique d'OCR reste un échec explicite.
+Le résumé compte les documents en mode nom seul. Les anciennes importations peuvent
+être reprises sans réimport en cliquant sur **Mettre à jour l'index** après redémarrage.
+Le coût est réestimé après récupération OCR avant calcul des embeddings ; l'estimation
+initiale peut être plus basse si les textes n'étaient pas encore récupérés.
+
+
 Les erreurs sont enregistrées dans `data/jobs/<id>/job.json` (champ `error`) et
 affichées dans **Documents en échec** dans l'application. La sortie complète d'OCRmyPDF
 est conservée dans `data/jobs/<id>/ocr.log` pour les nouveaux traitements terminés.

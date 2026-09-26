@@ -28,7 +28,11 @@ def extract_document_text(path: Path) -> str:
             return "\n".join(" | ".join(row) for row in csv.reader(source, delimiter=delimiter))
     if suffix == ".docx":
         document = Document(path)
-        return "\n".join(paragraph.text for paragraph in document.paragraphs)
+        parts = [paragraph.text for paragraph in document.paragraphs]
+        for table in document.tables:
+            for row in table.rows:
+                parts.append(" | ".join(cell.text for cell in row.cells))
+        return "\n".join(parts)
     if suffix == ".xlsx":
         workbook = load_workbook(path, read_only=True, data_only=True)
         parts: list[str] = []

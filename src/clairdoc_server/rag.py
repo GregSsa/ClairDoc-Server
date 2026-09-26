@@ -197,13 +197,20 @@ class RagService:
                     job_id=job.id,
                     name=job.original_filename,
                     source_relative_path=job.source_relative_path or job.original_filename,
-                    status="indexed" if record else "ready",
+                    status=(
+                        "indexed_name"
+                        if record.get("indexing_mode") == "name_only"
+                        else "indexed"
+                        if record
+                        else "ready"
+                    ),
                     category=str(metadata.get("category") or "À indexer"),
                     document_date=metadata.get("date"),
                     organization=metadata.get("organization"),
                     people=list(metadata.get("people") or []),
                     amounts=list(metadata.get("amounts") or []),
                     chunks=len(record.get("chunks", [])) if isinstance(record, dict) else 0,
+                    text_warning=job.text_warning,
                 )
             )
 
@@ -291,7 +298,7 @@ class RagService:
         except RecordNotFoundError:
             return {}
         same_configuration = (
-            existing.get("version") == 2
+            existing.get("version") == 3
             and (
                 existing.get("embedding_provider", "openai"),
                 existing.get("embedding_model"),
@@ -323,8 +330,14 @@ class RagService:
         for job in jobs:
             source_path = self.storage.source_path(job.id)
             document_hash = await asyncio.to_thread(_file_hash, source_path)
+            text_hash = await asyncio.to_thread(_file_hash, self.storage.text_path(job.id))
             previous = reusable.get(str(job.id))
-            if previous and previous.get("document_hash") == document_hash:
+            if (
+                previous
+                and previous.get("document_hash") == document_hash
+                and previous.get("text_hash") == text_hash
+                and previous.get("document_name") == job.original_filename
+            ):
                 reused += 1
                 continue
             to_embed += 1
@@ -332,11 +345,12 @@ class RagService:
                 pages = await asyncio.to_thread(
                     _extract_pdf_pages, self.storage.output_path(job.id)
                 )
-                characters += sum(len(text) for _, text in pages)
+                document_characters = sum(len(text.strip()) for _, text in pages)
             else:
-                characters += len(
+                document_characters = len(
                     self.storage.text_path(job.id).read_text(encoding="utf-8", errors="replace")
                 )
+            characters += document_characters or len(self._name_only_text(job.original_filename))
         estimated_tokens = math.ceil(characters / 4)
         estimated_cost = (
             estimated_tokens / 1_000_000 * self.settings.embedding_price_per_million_usd
@@ -374,6 +388,13 @@ class RagService:
                 raise NoDocumentsError("Aucun document analysé n'est disponible pour ce projet.")
 
             existing_documents = self._reusable_documents(project_id)
+            try:
+                previous_index = self.storage.read_index(project_id)
+            except RecordNotFoundError:
+                previous_index = {}
+            previous_records = {
+                str(d.get("job_id")): d for d in previous_index.get("documents", [])
+            }
 
             documents: list[dict[str, Any]] = []
             reused = 0
@@ -381,8 +402,14 @@ class RagService:
             for job in completed_jobs:
                 source_path = self.storage.source_path(job.id)
                 document_hash = await asyncio.to_thread(_file_hash, source_path)
+                text_hash = await asyncio.to_thread(_file_hash, self.storage.text_path(job.id))
                 previous = existing_documents.get(str(job.id))
-                if previous and previous.get("document_hash") == document_hash:
+                if (
+                    previous
+                    and previous.get("document_hash") == document_hash
+                    and previous.get("text_hash") == text_hash
+                    and previous.get("document_name") == job.original_filename
+                ):
                     documents.append(previous)
                     reused += 1
                     continue
@@ -397,7 +424,27 @@ class RagService:
                     )
                     pages = [(None, text)]
                 full_text = "\n".join(text for _, text in pages)
+                # The complete extracted text also contains filled form values and DOCX image OCR.
+                if not full_text.strip():
+                    full_text = self.storage.text_path(job.id).read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                    if full_text.strip() and "[OCR skipped" not in full_text:
+                        pages = [(None, full_text)]
+                    else:
+                        full_text = ""
+                indexing_mode = "content" if full_text.strip() else "name_only"
+                if indexing_mode == "name_only":
+                    pages = [
+                        (
+                            None,
+                            self._name_only_text(job.original_filename),
+                        )
+                    ]
                 metadata = extract_metadata(full_text, job.original_filename)
+                old_record = previous_records.get(str(job.id), {})
+                if old_record.get("document_hash") == document_hash:
+                    metadata.update(old_record.get("metadata", {}))
                 chunk_records: list[dict[str, Any]] = []
                 chunk_texts: list[str] = []
                 for page_number, page_text in pages:
@@ -411,9 +458,9 @@ class RagService:
                             {"index": len(chunk_records), "page_number": page_number, "text": value}
                         )
                         chunk_texts.append(value)
-                if not chunk_records:
-                    continue
-                embeddings = await self._embeddings(chunk_texts)
+                embeddings = await self._embeddings(
+                    [job.original_filename] if indexing_mode == "name_only" else chunk_texts
+                )
                 for record, embedding in zip(chunk_records, embeddings, strict=True):
                     record["embedding"] = embedding
                 documents.append(
@@ -422,6 +469,8 @@ class RagService:
                         "document_name": job.original_filename,
                         "source_relative_path": job.source_relative_path or job.original_filename,
                         "document_hash": document_hash,
+                        "text_hash": text_hash,
+                        "indexing_mode": indexing_mode,
                         "metadata": metadata,
                         "chunks": chunk_records,
                     }
@@ -431,7 +480,7 @@ class RagService:
             if not documents:
                 raise NoDocumentsError("Aucun texte exploitable n'a été trouvé dans les documents.")
             payload: dict[str, object] = {
-                "version": 2,
+                "version": 3,
                 "project_id": str(project_id),
                 "created_at": datetime.now(UTC).isoformat(),
                 "embedding_provider": provider,
@@ -440,6 +489,7 @@ class RagService:
                 "chunk_chars": chunk_chars,
                 "chunk_overlap": chunk_overlap,
                 "documents": documents,
+                "relationships": previous_index.get("relationships", []),
             }
             self.storage.write_index(project_id, payload)
             self._refresh_project_memory(project_id, documents)
@@ -449,7 +499,13 @@ class RagService:
                 documents_reused=reused,
                 chunks_indexed=sum(len(document["chunks"]) for document in documents),
                 embedding_model=model,
+                documents_name_only=sum(d.get("indexing_mode") == "name_only" for d in documents),
             )
+
+    @staticmethod
+    def _name_only_text(name: str) -> str:
+        prefix = f"Nom du fichier uniquement : {name}."
+        return f"{prefix} Aucun texte récupéré après OCR ; contenu inconnu."
 
     def _refresh_project_memory(self, project_id: UUID, documents: list[dict[str, Any]]) -> None:
         project = self.storage.get_project(project_id)
@@ -460,6 +516,8 @@ class RagService:
             category = str(metadata.get("category") or "Autres")
             categories[category] = categories.get(category, 0) + 1
             details = [category]
+            if document.get("indexing_mode") == "name_only":
+                details.append("Nom seul ; contenu inconnu")
             if metadata.get("date"):
                 details.append(str(metadata["date"]))
             if metadata.get("organization"):
