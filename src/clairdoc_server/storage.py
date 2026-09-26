@@ -366,7 +366,20 @@ class LocalStorage:
         return str(value) if value else default
 
     def set_llm_model(self, model: str) -> None:
+        self.update_runtime({"llm_model": model})
+
+    def get_embedding_provider(self, default: str = "openai") -> str:
+        try:
+            return str(self._read_json(self.runtime_path).get("embedding_provider") or default)
+        except RecordNotFoundError:
+            return default
+
+    def update_runtime(self, values: dict[str, object]) -> None:
+        try:
+            payload = self._read_json(self.runtime_path)
+        except RecordNotFoundError:
+            payload = {}
         self._write_json(
             self.runtime_path,
-            {"llm_model": model, "updated_at": datetime.now(UTC).isoformat()},
+            {**payload, **values, "updated_at": datetime.now(UTC).isoformat()},
         )

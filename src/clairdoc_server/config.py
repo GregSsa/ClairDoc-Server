@@ -30,6 +30,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPENAI_API_KEY", "CLAIRDOC_OPENAI_API_KEY"),
     )
     embedding_model: str = "text-embedding-3-small"
+    embedding_provider: str = "openai"
     embedding_dimensions: int = Field(default=512, ge=256, le=3072)
     llm_model: str = "gpt-6-luna"
     rag_top_k: int = Field(default=6, ge=1, le=20)

@@ -156,6 +156,9 @@ class RagService:
         self.storage = storage
         self.settings = settings
         self._index_lock = asyncio.Lock()
+        from .embeddings import EmbeddingService
+
+        self.embeddings = EmbeddingService(storage, settings, self._client)
 
     def _client(self) -> AsyncOpenAI:
         if not self.settings.openai_api_key:
@@ -273,16 +276,14 @@ class RagService:
         )
 
     async def _embeddings(self, texts: list[str]) -> list[list[float]]:
-        client = self._client()
-        vectors: list[list[float]] = []
-        for start in range(0, len(texts), 64):
-            response = await client.embeddings.create(
-                model=self.settings.embedding_model,
-                input=texts[start : start + 64],
-                dimensions=self.settings.embedding_dimensions,
+        return await self.embeddings.embed(texts, self._index_configuration)
+
+    def _chunk_configuration(self) -> tuple[int, int]:
+        if self.embeddings.configuration()[0] == "local":
+            return min(self.settings.rag_chunk_chars, 1000), min(
+                self.settings.rag_chunk_overlap, 150
             )
-            vectors.extend(item.embedding for item in response.data)
-        return vectors
+        return self.settings.rag_chunk_chars, self.settings.rag_chunk_overlap
 
     def _reusable_documents(self, project_id: UUID) -> dict[str, Any]:
         try:
@@ -291,10 +292,14 @@ class RagService:
             return {}
         same_configuration = (
             existing.get("version") == 2
-            and existing.get("embedding_model") == self.settings.embedding_model
-            and existing.get("embedding_dimensions") == self.settings.embedding_dimensions
-            and existing.get("chunk_chars") == self.settings.rag_chunk_chars
-            and existing.get("chunk_overlap") == self.settings.rag_chunk_overlap
+            and (
+                existing.get("embedding_provider", "openai"),
+                existing.get("embedding_model"),
+                existing.get("embedding_dimensions"),
+            )
+            == self.embeddings.configuration()
+            and (existing.get("chunk_chars"), existing.get("chunk_overlap"))
+            == self._chunk_configuration()
         )
         if not same_configuration:
             return {}
@@ -336,6 +341,9 @@ class RagService:
         estimated_cost = (
             estimated_tokens / 1_000_000 * self.settings.embedding_price_per_million_usd
         )
+        provider, model, _ = self.embeddings.configuration()
+        if provider == "local":
+            estimated_cost = 0
         return IndexEstimate(
             project_id=project_id,
             documents_total=len(jobs),
@@ -343,14 +351,20 @@ class RagService:
             documents_reused=reused,
             estimated_tokens=estimated_tokens,
             estimated_cost_usd=round(estimated_cost, 6),
-            price_per_million_tokens_usd=self.settings.embedding_price_per_million_usd,
-            embedding_model=self.settings.embedding_model,
+            price_per_million_tokens_usd=(
+                self.settings.embedding_price_per_million_usd if provider == "openai" else 0
+            ),
+            embedding_model=model,
         )
 
     async def index_project(self, project_id: UUID) -> IndexResponse:
-        self._client()
         self.storage.get_project(project_id)
         async with self._index_lock:
+            self._index_configuration = self.embeddings.configuration()
+            provider, model, dimensions = self._index_configuration
+            chunk_chars, chunk_overlap = self._chunk_configuration()
+            if provider == "openai":
+                self._client()
             completed_jobs = [
                 job
                 for job in self.storage.jobs_for_project(project_id)
@@ -389,8 +403,8 @@ class RagService:
                 for page_number, page_text in pages:
                     values = chunk_text(
                         page_text,
-                        self.settings.rag_chunk_chars,
-                        self.settings.rag_chunk_overlap,
+                        chunk_chars,
+                        chunk_overlap,
                     )
                     for value in values:
                         chunk_records.append(
@@ -420,10 +434,11 @@ class RagService:
                 "version": 2,
                 "project_id": str(project_id),
                 "created_at": datetime.now(UTC).isoformat(),
-                "embedding_model": self.settings.embedding_model,
-                "embedding_dimensions": self.settings.embedding_dimensions,
-                "chunk_chars": self.settings.rag_chunk_chars,
-                "chunk_overlap": self.settings.rag_chunk_overlap,
+                "embedding_provider": provider,
+                "embedding_model": model,
+                "embedding_dimensions": dimensions,
+                "chunk_chars": chunk_chars,
+                "chunk_overlap": chunk_overlap,
                 "documents": documents,
             }
             self.storage.write_index(project_id, payload)
@@ -433,7 +448,7 @@ class RagService:
                 documents_indexed=indexed,
                 documents_reused=reused,
                 chunks_indexed=sum(len(document["chunks"]) for document in documents),
-                embedding_model=self.settings.embedding_model,
+                embedding_model=model,
             )
 
     def _refresh_project_memory(self, project_id: UUID, documents: list[dict[str, Any]]) -> None:
@@ -468,12 +483,7 @@ class RagService:
                 "Le projet doit être indexé avant de poser une question."
             ) from exc
         client = self._client()
-        query = await client.embeddings.create(
-            model=str(index["embedding_model"]),
-            input=question,
-            dimensions=int(index["embedding_dimensions"]),
-        )
-        query_vector = query.data[0].embedding
+        query_vector = await self.embeddings.query(question, index)
         ranked: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
         for document in index.get("documents", []):
             metadata_text = " ".join(str(value) for value in document.get("metadata", {}).values())

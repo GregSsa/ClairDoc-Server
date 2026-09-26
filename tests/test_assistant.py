@@ -1,6 +1,8 @@
 from pathlib import Path
 from uuid import UUID
 
+import pytest
+
 from clairdoc_server.assistant import AssistantService
 from clairdoc_server.config import Settings
 from clairdoc_server.models import ConversationMessage, ProjectCreate
@@ -35,6 +37,39 @@ def make_service(tmp_path: Path) -> tuple[LocalStorage, AssistantService, str, s
     settings = Settings(data_dir=tmp_path / "data", api_key="test-secret")
     service = AssistantService(storage, RagService(storage, settings))
     return storage, service, str(project.id), str(job.id)
+
+
+def test_read_pdf_ocr_by_name_without_source_access(tmp_path: Path) -> None:
+    storage, service, project_id, _ = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    job = storage.create_job("e001.pdf", project_uuid, "archive/e001.pdf")
+    storage.text_path(job.id).write_text("Attestation fiscale 2025", encoding="utf-8")
+    result, action = service._execute_tool(
+        project_uuid, "read_project_document", {"document": "e001", "offset": 0, "limit": 11}, False
+    )
+    assert result["text"] == "Attestation"
+    assert result["next_offset"] == 11
+    assert action.status == "completed"
+    other = storage.create_project(ProjectCreate(name="Autre"))
+    with pytest.raises(ValueError):
+        service._read_document(other.id, {"document": str(job.id)})
+
+
+def test_rename_requires_permission_and_preserves_extension(tmp_path: Path) -> None:
+    storage, service, project_id, job_id = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    args = {"job_id": job_id, "new_name": "memo.txt"}
+    result, _ = service._execute_tool(project_uuid, "rename_document", args, False)
+    assert result["requires_confirmation"]
+    for name in ["../outside.txt", "memo.pdf", "sub/memo.txt"]:
+        with pytest.raises(ValueError):
+            service._rename_document(project_uuid, {**args, "new_name": name})
+    result, _ = service._execute_tool(project_uuid, "rename_document", args, True)
+    assert result["ok"]
+    assert (tmp_path / "documents" / "memo.txt").is_file()
+    assert not (tmp_path / "documents" / "note.txt").exists()
+    assert storage.get_job(UUID(job_id)).original_filename == "memo.txt"
+    assert storage.read_index(project_uuid)["documents"][0]["document_name"] == "memo.txt"
 
 
 def test_conversations_and_memory_are_persisted(tmp_path: Path) -> None:

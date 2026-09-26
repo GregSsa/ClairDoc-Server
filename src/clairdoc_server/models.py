@@ -77,6 +77,7 @@ class RuntimeInfo(BaseModel):
     llm_model: str
     embedding_model: str
     embedding_dimensions: int
+    embedding_provider: str = "openai"
     ocr_languages: str
     data_dir: str
     max_upload_mb: int
@@ -87,7 +88,12 @@ class RuntimeInfo(BaseModel):
 
 
 class RuntimeUpdate(BaseModel):
-    llm_model: str
+    llm_model: str | None = None
+    embedding_provider: str | None = None
+
+
+class OrganizationOptions(BaseModel):
+    rename_files: bool = False
 
 
 class IndexResponse(BaseModel):

@@ -17,6 +17,26 @@ def make_client(tmp_path: Path, api_key: str | None = "test-secret") -> TestClie
     return TestClient(create_app(settings))
 
 
+def test_runtime_embedding_choice_is_persisted(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    with make_client(tmp_path) as client:
+        changed = client.patch(
+            "/api/v1/runtime", headers=headers, json={"embedding_provider": "local"}
+        )
+        assert changed.status_code == 200
+        assert changed.json()["embedding_dimensions"] == 384
+        assert not changed.json()["openai_configured"]
+        client.patch("/api/v1/runtime", headers=headers, json={"llm_model": "gpt-6-sol"})
+        rejected = client.patch(
+            "/api/v1/runtime", headers=headers, json={"embedding_provider": "unknown"}
+        )
+        assert rejected.status_code == 422
+    with make_client(tmp_path) as client:
+        runtime = client.get("/api/v1/runtime", headers=headers).json()
+        assert runtime["embedding_provider"] == "local"
+        assert runtime["llm_model"] == "gpt-6-sol"
+
+
 def test_health_reports_configuration(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.get("/api/v1/health")

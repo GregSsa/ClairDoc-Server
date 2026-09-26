@@ -26,4 +26,11 @@ def test_plan_builds_category_year_and_unique_names(tmp_path: Path) -> None:
     plan = OrganizationService(storage).build_plan(project.id)
 
     assert plan.entries[0].suggested_path.startswith("Factures/2026/")
+    assert plan.entries[0].suggested_path.endswith("/scan.pdf")
     assert plan.entries[1].suggested_path.endswith("_2.pdf")
+    renamed = OrganizationService(storage).build_plan(
+        project.id,
+        rename_files=True,
+        names={document["job_id"]: "Facture_ACME_mars_2026"},
+    )
+    assert renamed.entries[0].suggested_path.endswith("/Facture_ACME_mars_2026.pdf")

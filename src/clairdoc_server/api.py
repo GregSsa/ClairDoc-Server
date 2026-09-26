@@ -26,6 +26,7 @@ from .models import (
     IndexTask,
     JobStatus,
     OcrJob,
+    OrganizationOptions,
     OrganizationPlan,
     Project,
     ProjectCreate,
@@ -129,11 +130,13 @@ async def delete_project(request: Request, project_id: UUID) -> None:
 @protected.get("/runtime", response_model=RuntimeInfo)
 async def runtime_info(request: Request) -> RuntimeInfo:
     settings = request.app.state.settings
+    provider, model, dimensions = request.app.state.rag.embeddings.configuration()
     return RuntimeInfo(
         version=__version__,
         llm_model=_storage(request).get_llm_model(settings.llm_model),
-        embedding_model=settings.embedding_model,
-        embedding_dimensions=settings.embedding_dimensions,
+        embedding_provider=provider,
+        embedding_model=model,
+        embedding_dimensions=dimensions,
         ocr_languages=settings.ocr_languages,
         data_dir=str(settings.data_dir.resolve()),
         max_upload_mb=settings.max_upload_mb,
@@ -146,9 +149,16 @@ async def runtime_info(request: Request) -> RuntimeInfo:
 
 @protected.patch("/runtime", response_model=RuntimeInfo)
 async def update_runtime(request: Request, payload: RuntimeUpdate) -> RuntimeInfo:
-    if payload.llm_model not in LLM_MODEL_OPTIONS:
+    if payload.llm_model is not None and payload.llm_model not in LLM_MODEL_OPTIONS:
         raise HTTPException(status_code=422, detail="Ce modèle n'est pas proposé par ClairDoc.")
-    _storage(request).set_llm_model(payload.llm_model)
+    if payload.embedding_provider is not None and payload.embedding_provider not in {
+        "openai",
+        "local",
+    }:
+        raise HTTPException(status_code=422, detail="Choisissez OpenAI ou local.")
+    if request.app.state.rag._index_lock.locked() and payload.embedding_provider is not None:
+        raise HTTPException(status_code=409, detail="Attendez la fin de l'indexation.")
+    _storage(request).update_runtime(payload.model_dump(exclude_none=True))
     return await runtime_info(request)
 
 
@@ -361,14 +371,25 @@ async def get_project_memory(request: Request, project_id: UUID) -> ProjectMemor
 
 
 @protected.post("/projects/{project_id}/organization/plan", response_model=OrganizationPlan)
-async def create_organization_plan(request: Request, project_id: UUID) -> OrganizationPlan:
+async def create_organization_plan(
+    request: Request, project_id: UUID, payload: OrganizationOptions | None = None
+) -> OrganizationPlan:
+    payload = payload or OrganizationOptions()
     try:
-        return request.app.state.organization.build_plan(project_id)
+        names = (
+            await request.app.state.organization.suggest_names(project_id, request.app.state.rag)
+            if payload.rename_files
+            else None
+        )
+        return request.app.state.organization.build_plan(project_id, payload.rename_files, names)
     except RecordNotFoundError as exc:
         raise HTTPException(
             status_code=409,
             detail="Le projet doit être indexé avant de préparer le classement.",
         ) from exc
+
+    except (OpenAIConfigurationError, OpenAIError) as exc:
+        raise _rag_error(exc) from exc
 
 
 @protected.post("/maintenance/backups", response_model=BackupResponse)

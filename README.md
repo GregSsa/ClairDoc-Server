@@ -84,6 +84,35 @@ Pour chiffrer une connexion réseau, renseignez ensemble `CLAIRDOC_TLS_CERTFILE`
 
 Par défaut, les embeddings utilisent `text-embedding-3-small` avec 512 dimensions et les réponses utilisent `gpt-6-luna`. Ces valeurs peuvent être changées dans `.env`.
 
+### Embeddings locaux et renommage
+
+Dans les paramètres de l'application, choisissez **Calcul des embeddings → Local sur le serveur**.
+FastEmbed utilise `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` sur CPU
+(384 dimensions). Le premier calcul télécharge le modèle depuis Hugging Face (environ
+220 Mo annoncés), puis le cache est conservé dans `data/models`. Les calculs suivants
+ne nécessitent pas d'appel OpenAI. Exécutez `uv sync` après cette mise à jour.
+Le choix est persisté dans `data/runtime.json` ; `CLAIRDOC_EMBEDDING_PROVIDER=local`
+permet aussi de définir la valeur initiale.
+
+Relancez l'indexation des projets pour utiliser le nouveau fournisseur. Les anciens index
+restent interrogeables avec leur propre modèle et fournisseur ; leurs vecteurs ne sont
+jamais mélangés avec les nouveaux. Le coût API des embeddings locaux est nul, mais
+leur calcul utilise le CPU et prend du temps. Les morceaux locaux sont plus courts
+pour limiter la troncature du modèle.
+
+Le LLM de conversation et le renommage automatique utilisent toujours `OPENAI_API_KEY`.
+L'option **Autoriser l'IA à proposer de nouveaux noms** est désactivée par défaut.
+Quand elle est activée, le serveur transmet au LLM jusqu'à 6 000 caractères de texte
+par document, par lots de dix, et prépare uniquement des propositions. Aucun fichier
+n'est renommé avant validation du plan. Sans cette option, les noms sont conservés,
+avec suffixe en cas de doublon dans le même dossier cible.
+
+L'assistant dispose de `read_project_document` pour lire le texte extrait d'un PDF
+par nom, chemin ou identifiant, même si son dossier source n'est pas accessible au serveur.
+Une analyse/OCR terminée est nécessaire. `rename_document` conserve l'extension et
+le dossier et exige l'autorisation d'écriture. Le renommage effectif nécessite que le
+dossier source soit accessible au serveur (même chemin ou montage réseau).
+
 L'estimation préalable utilise approximativement un token pour quatre caractères. Elle sert de garde-fou, pas de facture exacte. Le tarif de référence est configurable avec `CLAIRDOC_EMBEDDING_PRICE_PER_MILLION_USD` afin de pouvoir l'actualiser sans changer le code. `CLAIRDOC_MAX_INDEX_TOKENS` bloque une tâche qui dépasserait la limite choisie.
 
 Exemple d'envoi :
