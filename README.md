@@ -202,6 +202,17 @@ suppression déplace le fichier dans `.clairdoc/trash` au lieu de l'effacer déf
 
 ## Qualité
 
+### Diagnostics d'import
+
+Les erreurs sont enregistrées dans `data/jobs/<id>/job.json` (champ `error`) et
+affichées dans **Documents en échec** dans l'application. La sortie complète d'OCRmyPDF
+est conservée dans `data/jobs/<id>/ocr.log` pour les nouveaux traitements terminés.
+Le serveur produit un PDF standard (`--output-type pdf`), sans conversion PDF/A,
+pour préserver l'espace colorimétrique et éviter `ColorConversionNeededError`.
+Le texte est ensuite extrait de toutes les pages du PDF produit, ainsi que des valeurs
+des champs de formulaire ; le sidecar OCR seul ne contient pas le texte des pages sautées.
+
+
 ```bash
 uv run ruff check .
 uv run pytest

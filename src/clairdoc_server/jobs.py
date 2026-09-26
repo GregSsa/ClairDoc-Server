@@ -5,6 +5,8 @@ import shutil
 from pathlib import Path
 from uuid import UUID
 
+from pypdf import PdfReader
+
 from .config import Settings
 from .extractors import IMAGE_EXTENSIONS, extract_document_text
 from .models import JobStatus, utc_now
@@ -114,6 +116,8 @@ class OcrJobManager:
             "--deskew",
             "--oversample",
             "300",
+            "--output-type",
+            "pdf",
             "--language",
             self.settings.ocr_languages,
             "--sidecar",
@@ -166,7 +170,17 @@ class OcrJobManager:
             self.storage.save_job(job)
             return
 
+        diagnostic = (stderr or stdout).decode("utf-8", errors="replace").strip()
+        (self.storage.job_dir(job_id) / "ocr.log").write_text(diagnostic, encoding="utf-8")
         if process.returncode == 0:
+            try:
+                await asyncio.to_thread(self._extract_pdf_text, job_id)
+            except Exception as exc:
+                job.status = JobStatus.FAILED
+                job.completed_at = utc_now()
+                job.error = f"PDF traité, mais extraction du texte impossible : {exc}"[-4000:]
+                self.storage.save_job(job)
+                return
             job.status = JobStatus.COMPLETED
             job.completed_at = utc_now()
             job.error = None
@@ -174,11 +188,23 @@ class OcrJobManager:
             logger.info("Travail OCR terminé : %s", job_id)
             return
 
-        diagnostic = (stderr or stdout).decode("utf-8", errors="replace").strip()
         job.status = JobStatus.FAILED
         job.completed_at = utc_now()
         job.error = diagnostic[-4000:] or f"OCRmyPDF a retourné le code {process.returncode}."
         self.storage.save_job(job)
+
+    def _extract_pdf_text(self, job_id: UUID) -> None:
+        # The OCR sidecar omits pages with existing text. Read the whole resulting PDF.
+        reader = PdfReader(self.storage.output_path(job_id))
+        parts = [page.extract_text() or "" for page in reader.pages]
+        for name, field in (reader.get_fields() or {}).items():
+            value = field.get("/V")
+            if value is not None:
+                parts.append(f"{name}: {value}")
+        text = "\n\f\n".join(parts)
+        if not text.strip():
+            raise ValueError("Aucun texte exploitable détecté dans le PDF.")
+        self.storage.text_path(job_id).write_text(text, encoding="utf-8")
 
     async def _process_non_pdf(self, job_id: UUID, source_path: Path) -> None:
         job = self.storage.get_job(job_id)
