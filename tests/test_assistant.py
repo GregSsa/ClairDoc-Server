@@ -21,6 +21,7 @@ def make_service(tmp_path: Path) -> tuple[LocalStorage, AssistantService, str, s
     job = storage.create_job("note.txt", project.id, "note.txt")
     job.content_sha256 = hashlib.sha256(b"Contenu du projet").hexdigest()
     storage.save_job(job)
+    storage.text_path(job.id).write_text("Contenu du projet", encoding="utf-8")
     storage.write_index(
         project.id,
         {
@@ -153,6 +154,38 @@ def test_read_tools_are_limited_to_project_text_files(tmp_path: Path) -> None:
             False,
         )
     except ValueError as error:
-        assert "sort du dossier" in str(error)
+        assert "invalide" in str(error)
     else:
         raise AssertionError("La lecture hors projet aurait dû être refusée")
+
+
+def test_local_file_action_waits_for_confirmation_then_updates_index(tmp_path: Path) -> None:
+    storage, service, project_id, job_id = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    result, action = service._execute_tool(
+        project_uuid,
+        "rename_document",
+        {"job_id": job_id, "new_name": "memo.txt"},
+        False,
+        defer_file_actions=True,
+    )
+    assert result["requires_local_confirmation"] is True
+    assert action.status == "pending_local"
+    assert (tmp_path / "documents" / "note.txt").is_file()
+
+    conversation = storage.create_conversation(project_uuid, "Renommage")
+    conversation.messages.append(
+        ConversationMessage(role="assistant", content="Proposition", actions=[action])
+    )
+    storage.save_conversation(conversation)
+    (tmp_path / "documents" / "note.txt").rename(tmp_path / "documents" / "memo.txt")
+    completed = service.complete_local_action(project_uuid, conversation.id, action.id)
+    assert completed.status == "completed"
+    assert storage.get_job(UUID(job_id)).source_relative_path == "memo.txt"
+    assert storage.read_index(project_uuid)["documents"][0]["document_name"] == "memo.txt"
+    assert (
+        storage.get_conversation(project_uuid, conversation.id).messages[0].actions[0].status
+        == "completed"
+    )
+    with pytest.raises(ValueError, match="déjà traitée"):
+        service.complete_local_action(project_uuid, conversation.id, action.id)

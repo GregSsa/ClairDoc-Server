@@ -172,9 +172,13 @@ class ConversationSummary(BaseModel):
 
 
 class AssistantAction(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
     tool: str
     status: str
     summary: str
+    arguments: dict[str, str] = Field(default_factory=dict)
+    source_relative_path: str | None = None
+    expected_sha256: str | None = None
 
 
 class ConversationMessage(BaseModel):

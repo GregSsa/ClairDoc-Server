@@ -14,6 +14,7 @@ from .extractors import SUPPORTED_EXTENSIONS
 from .models import (
     AskRequest,
     AskResponse,
+    AssistantAction,
     BackupResponse,
     ConnectionResponse,
     Conversation,
@@ -402,6 +403,23 @@ async def send_conversation_message(
         OpenAIError,
     ) as exc:
         raise _rag_error(exc) from exc
+
+
+@protected.post(
+    "/projects/{project_id}/conversations/{conversation_id}/local-actions/{action_id}/complete",
+    response_model=AssistantAction,
+)
+async def complete_local_action(
+    request: Request, project_id: UUID, conversation_id: UUID, action_id: UUID
+) -> AssistantAction:
+    try:
+        return request.app.state.assistant.complete_local_action(
+            project_id, conversation_id, action_id
+        )
+    except RecordNotFoundError as exc:
+        raise _not_found("Action ou conversation") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @protected.get("/projects/{project_id}/memory", response_model=ProjectMemory)
