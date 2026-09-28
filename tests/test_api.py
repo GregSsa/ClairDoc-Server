@@ -1,10 +1,13 @@
+import hashlib
 from pathlib import Path
 from time import monotonic, sleep
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
 from clairdoc_server.config import Settings
 from clairdoc_server.main import create_app
+from clairdoc_server.models import JobStatus
 
 
 def make_client(tmp_path: Path, api_key: str | None = "test-secret") -> TestClient:
@@ -35,6 +38,29 @@ def test_runtime_embedding_choice_is_persisted(tmp_path: Path) -> None:
         runtime = client.get("/api/v1/runtime", headers=headers).json()
         assert runtime["embedding_provider"] == "local"
         assert runtime["llm_model"] == "gpt-6-sol"
+
+
+def test_project_source_access_detects_missing_and_mismatched_folder(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    root = tmp_path / "originals"
+    root.mkdir()
+    (root / "invoice.txt").write_text("the original", encoding="utf-8")
+    with make_client(tmp_path) as client:
+        project = client.post("/api/v1/projects", headers=headers,
+                              json={"name": "Maison", "source_root": str(root)}).json()
+        project_id = project["id"]
+        path = f"/api/v1/projects/{project_id}/source-access"
+        assert client.get(path, headers=headers).json()["accessible"] is False
+        storage = client.app.state.storage
+        job = storage.create_job("invoice.txt", UUID(project_id), "invoice.txt")
+        job.status = JobStatus.COMPLETED
+        job.content_sha256 = hashlib.sha256(b"the original").hexdigest()
+        storage.save_job(job)
+        assert client.get(path, headers=headers).json()["accessible"]
+        (root / "invoice.txt").write_text("a different file", encoding="utf-8")
+        result = client.get(path, headers=headers)
+        assert result.status_code == 200
+        assert result.json()["accessible"] is False
 
 
 def test_health_reports_configuration(tmp_path: Path) -> None:

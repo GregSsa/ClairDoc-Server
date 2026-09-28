@@ -32,11 +32,12 @@ from .models import (
     ProjectCreate,
     ProjectMemory,
     ProjectOcrState,
+    ProjectSourceAccess,
     ProjectUpdate,
     RuntimeInfo,
     RuntimeUpdate,
 )
-from .rag import NoDocumentsError, OpenAIConfigurationError, ProjectIndexNotFoundError
+from .rag import NoDocumentsError, OpenAIConfigurationError, ProjectIndexNotFoundError, _file_hash
 from .security import require_api_key
 from .storage import LocalStorage, RecordNotFoundError
 
@@ -125,6 +126,47 @@ async def delete_project(request: Request, project_id: UUID) -> None:
         _storage(request).delete_project(project_id)
     except RecordNotFoundError as exc:
         raise _not_found("Projet") from exc
+
+
+@protected.get("/projects/{project_id}/source-access", response_model=ProjectSourceAccess)
+async def project_source_access(request: Request, project_id: UUID) -> ProjectSourceAccess:
+    try:
+        project = _storage(request).get_project(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+    if not project.source_root:
+        return ProjectSourceAccess(accessible=False, reason="Aucun dossier source lié au projet.")
+    root = Path(project.source_root).expanduser().resolve()
+    if not root.is_dir():
+        return ProjectSourceAccess(
+            accessible=False, reason="Le dossier source n'est pas visible depuis le serveur."
+        )
+    verified = False
+    for job in _storage(request).jobs_for_project(project_id):
+        if not job.source_relative_path or not job.content_sha256:
+            continue
+        candidate = (root / job.source_relative_path).resolve()
+        if root not in candidate.parents or not candidate.is_file():
+            return ProjectSourceAccess(
+                accessible=False,
+                reason="Les fichiers importés ne sont pas accessibles depuis le serveur.",
+            )
+        if await asyncio.to_thread(_file_hash, candidate) != job.content_sha256:
+            return ProjectSourceAccess(
+                accessible=False,
+                reason="Le dossier visible sur le serveur ne correspond pas aux fichiers importés.",
+            )
+        verified = True
+        break
+    if not verified:
+        return ProjectSourceAccess(
+            accessible=False,
+            reason="Importez au moins un document avant d'autoriser les modifications de fichiers.",
+        )
+    return ProjectSourceAccess(
+        accessible=True,
+        reason="Le serveur peut accéder au dossier et le modifier après autorisation.",
+    )
 
 
 @protected.get("/runtime", response_model=RuntimeInfo)

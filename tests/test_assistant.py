@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 from uuid import UUID
 
@@ -18,6 +19,8 @@ def make_service(tmp_path: Path) -> tuple[LocalStorage, AssistantService, str, s
     storage.initialize()
     project = storage.create_project(ProjectCreate(name="Archives", source_root=str(root)))
     job = storage.create_job("note.txt", project.id, "note.txt")
+    job.content_sha256 = hashlib.sha256(b"Contenu du projet").hexdigest()
+    storage.save_job(job)
     storage.write_index(
         project.id,
         {
@@ -107,6 +110,14 @@ def test_write_tools_require_permission_and_stay_in_project(tmp_path: Path) -> N
     assert action.status == "completed"
     document = storage.read_index(project_uuid)["documents"][0]
     assert document["metadata"]["category"] == "Important"
+
+    job = storage.get_job(UUID(job_id))
+    job.content_sha256 = "0" * 64
+    storage.save_job(job)
+    with pytest.raises(ValueError, match="ne correspond pas"):
+        service._project_root(project_uuid)
+    job.content_sha256 = hashlib.sha256(b"Contenu du projet").hexdigest()
+    storage.save_job(job)
 
     try:
         service._execute_tool(

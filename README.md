@@ -36,6 +36,8 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Il exécute l
 - exploration contrôlée du dossier source et lecture bornée des fichiers texte ;
 - actions d'écriture limitées au dossier source, soumises à autorisation et journalisées.
 
+L'API `GET /api/v1/projects/{project_id}/source-access` indique si le dossier importé est aussi accessible sur le serveur. Elle vérifie un fichier importé par empreinte SHA-256 avant d'autoriser les outils qui agissent sur le dossier source. L'import de documents et les conversations restent possibles quand le dossier n'est pas monté sur le serveur ; les modifications des fichiers originaux, elles, ne le sont pas.
+
 ## Prérequis
 
 - Linux ou WSL2 avec Ubuntu 22.04 ou une version plus récente ;

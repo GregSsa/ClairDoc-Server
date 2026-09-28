@@ -31,6 +31,11 @@ class Project(BaseModel):
     ocr_paused: bool = False
 
 
+class ProjectSourceAccess(BaseModel):
+    accessible: bool
+    reason: str
+
+
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"

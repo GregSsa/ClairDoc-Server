@@ -6,7 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from .models import AskResponse, AssistantAction, Citation, ConversationMessage
-from .rag import cosine_similarity, keyword_similarity
+from .rag import _file_hash, cosine_similarity, keyword_similarity
 from .storage import LocalStorage
 
 ASSISTANT_INSTRUCTIONS = """Tu es l'assistant spécialisé d'un projet ClairDoc.
@@ -416,6 +416,24 @@ class AssistantService:
         root = Path(project.source_root).expanduser().resolve()
         if not root.is_dir():
             raise ValueError("Le dossier source du projet est inaccessible sur le serveur.")
+        verified = False
+        for job in self.storage.jobs_for_project(project_id):
+            if not job.source_relative_path or not job.content_sha256:
+                continue
+            sample = (root / job.source_relative_path).resolve()
+            if (
+                root not in sample.parents
+                or not sample.is_file()
+                or _file_hash(sample) != job.content_sha256
+            ):
+                raise ValueError(
+                    "Le dossier visible sur le serveur ne correspond pas au dossier importé. "
+                    "Les modifications de fichiers sont désactivées."
+                )
+            verified = True
+            break
+        if not verified:
+            raise ValueError("Importez au moins un document avant de modifier le dossier source.")
         return root
 
     @staticmethod
