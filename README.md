@@ -40,6 +40,8 @@ L'API `GET /api/v1/projects/{project_id}/source-access` indique si le dossier im
 
 L'assistant ne reçoit plus automatiquement les extraits RAG. Il utilise `search_project_documents` ou les autres outils de lecture lorsqu'une question nécessite le contenu des documents.
 
+La recherche dédiée `POST /api/v1/projects/{id}/search` accepte `query`, `mode` (`local` ou `ai`) et `limit` (1–20). Elle renvoie seulement les documents classés et jusqu'à deux passages verbatim avec leur page. Le mode `local` n'appelle aucun modèle conversationnel, mais l'encodage de la requête utilise le fournisseur d'embeddings de l'index (OpenAI ou local). Le mode `ai` envoie au modèle OpenAI au maximum 60 passages candidats bornés à 1 000 caractères, puis vérifie que les identifiants renvoyés existent dans l'index. Les documents indexés sur le nom seul n'ont pas de passage textuel.
+
 ## Prérequis
 
 - Linux ou WSL2 avec Ubuntu 22.04 ou une version plus récente ;
@@ -189,6 +191,7 @@ Le dossier `data` et le fichier `.env` sont exclus de Git.
 | `GET` | `/api/v1/index/jobs/{id}` | Suivre une indexation persistante |
 | `POST` | `/api/v1/index/jobs/{id}/retry` | Relancer une indexation en échec |
 | `POST` | `/api/v1/projects/{id}/ask` | Poser une question sur l'index du projet |
+| `POST` | `/api/v1/projects/{id}/search` | Rechercher des documents et passages, sans réponse conversationnelle |
 | `GET/POST` | `/api/v1/projects/{id}/conversations` | Lister ou créer les conversations du projet |
 | `GET/DELETE` | `/api/v1/projects/{id}/conversations/{conversation}` | Lire ou supprimer une conversation |
 | `POST` | `/api/v1/projects/{id}/conversations/{conversation}/messages` | Envoyer un message à l'assistant du projet |

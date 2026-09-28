@@ -142,6 +142,36 @@ class AskRequest(BaseModel):
     allow_write_actions: bool = False
 
 
+class DocumentSearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=1000)
+    mode: str = Field(default="local", pattern="^(local|ai)$")
+    limit: int = Field(default=10, ge=1, le=20)
+
+
+class SearchPassage(BaseModel):
+    text: str
+    page_number: int | None = None
+    chunk_index: int
+    score: float
+
+
+class SearchDocument(BaseModel):
+    job_id: UUID
+    document_name: str
+    source_relative_path: str
+    category: str
+    indexing_mode: str
+    score: float
+    passages: list[SearchPassage]
+
+
+class DocumentSearchResponse(BaseModel):
+    query: str
+    mode: str
+    results: list[SearchDocument]
+    model: str | None = None
+
+
 class Citation(BaseModel):
     document_name: str
     job_id: UUID

@@ -21,6 +21,8 @@ from .models import (
     ConversationCreate,
     ConversationSummary,
     DocumentLibrary,
+    DocumentSearchRequest,
+    DocumentSearchResponse,
     HealthResponse,
     IndexEstimate,
     IndexResponse,
@@ -270,6 +272,28 @@ async def list_project_documents(request: Request, project_id: UUID) -> Document
         return request.app.state.rag.document_library(project_id)
     except RecordNotFoundError as exc:
         raise _not_found("Projet") from exc
+
+
+@protected.post("/projects/{project_id}/search", response_model=DocumentSearchResponse)
+async def search_project_documents(
+    request: Request, project_id: UUID, payload: DocumentSearchRequest
+) -> DocumentSearchResponse:
+    query = payload.query.strip()
+    if len(query) < 2:
+        raise HTTPException(status_code=422, detail="Saisissez au moins deux caractères.")
+    try:
+        return await request.app.state.rag.search_documents(
+            project_id, query, payload.mode, payload.limit
+        )
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+    except (
+        OpenAIConfigurationError,
+        NoDocumentsError,
+        ProjectIndexNotFoundError,
+        OpenAIError,
+    ) as exc:
+        raise _rag_error(exc) from exc
 
 
 @protected.post(
