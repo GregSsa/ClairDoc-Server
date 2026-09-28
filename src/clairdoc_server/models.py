@@ -181,6 +181,22 @@ class AssistantAction(BaseModel):
     expected_sha256: str | None = None
 
 
+class DraftAction(BaseModel):
+    id: UUID
+    conversation_id: UUID
+    job_id: UUID
+    tool: str
+    summary: str
+    source_relative_path: str
+    destination_relative_path: str | None = None
+    expected_sha256: str
+
+
+class ProjectDraft(BaseModel):
+    project_id: UUID
+    actions: list[DraftAction]
+
+
 class ConversationMessage(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     role: str

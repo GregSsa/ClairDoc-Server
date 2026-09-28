@@ -1,5 +1,7 @@
 import hashlib
+from asyncio import run
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -178,6 +180,25 @@ def test_local_file_action_waits_for_confirmation_then_updates_index(tmp_path: P
         ConversationMessage(role="assistant", content="Proposition", actions=[action])
     )
     storage.save_conversation(conversation)
+    draft = service.draft_for_project(project_uuid)
+    assert len(draft.actions) == 1
+    assert draft.actions[0].destination_relative_path == "memo.txt"
+    with pytest.raises(ValueError, match="extension"):
+        service._execute_tool(
+            project_uuid,
+            "move_document",
+            {"job_id": job_id, "destination": "ailleurs.pdf"},
+            False,
+            defer_file_actions=True,
+        )
+    with pytest.raises(ValueError, match="déjà dans le brouillon"):
+        service._execute_tool(
+            project_uuid,
+            "move_document",
+            {"job_id": job_id, "destination": "ailleurs.txt"},
+            False,
+            defer_file_actions=True,
+        )
     (tmp_path / "documents" / "note.txt").rename(tmp_path / "documents" / "memo.txt")
     completed = service.complete_local_action(project_uuid, conversation.id, action.id)
     assert completed.status == "completed"
@@ -189,3 +210,122 @@ def test_local_file_action_waits_for_confirmation_then_updates_index(tmp_path: P
     )
     with pytest.raises(ValueError, match="déjà traitée"):
         service.complete_local_action(project_uuid, conversation.id, action.id)
+    assert service.draft_for_project(project_uuid).actions == []
+
+
+def test_draft_action_can_be_cancelled_without_touching_file(tmp_path: Path) -> None:
+    storage, service, project_id, job_id = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    _, action = service._execute_tool(
+        project_uuid,
+        "delete_document",
+        {"job_id": job_id},
+        False,
+        defer_file_actions=True,
+    )
+    conversation = storage.create_conversation(project_uuid, "Corbeille")
+    conversation.messages.append(
+        ConversationMessage(role="assistant", content="Proposition", actions=[action])
+    )
+    storage.save_conversation(conversation)
+    assert len(service.draft_for_project(project_uuid).actions) == 1
+    cancelled = service.cancel_local_action(project_uuid, conversation.id, action.id)
+    assert cancelled.status == "cancelled"
+    assert service.draft_for_project(project_uuid).actions == []
+    assert (tmp_path / "documents" / "note.txt").is_file()
+
+
+def test_local_move_can_finish_before_project_is_indexed(tmp_path: Path) -> None:
+    storage, service, project_id, job_id = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    storage.index_path(project_uuid).unlink()
+    _, action = service._execute_tool(
+        project_uuid,
+        "move_document",
+        {"job_id": job_id, "destination": "archives/note.txt"},
+        False,
+        defer_file_actions=True,
+    )
+    conversation = storage.create_conversation(project_uuid, "Déplacement")
+    conversation.messages.append(
+        ConversationMessage(role="assistant", content="Proposition", actions=[action])
+    )
+    storage.save_conversation(conversation)
+    destination = tmp_path / "documents" / "archives" / "note.txt"
+    destination.parent.mkdir()
+    (tmp_path / "documents" / "note.txt").rename(destination)
+    service.complete_local_action(project_uuid, conversation.id, action.id)
+    assert storage.get_job(UUID(job_id)).source_relative_path == "archives/note.txt"
+
+
+def test_assistant_does_not_load_document_content_before_tool_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage, service, project_id, _ = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    conversation = storage.create_conversation(project_uuid, "Question")
+    calls: list[dict[str, object]] = []
+
+    class Responses:
+        async def create(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(output=[], output_text="Bonjour.")
+
+    monkeypatch.setattr(service.rag, "_client", lambda: SimpleNamespace(responses=Responses()))
+
+    async def unexpected_search(*_args: object) -> None:
+        raise AssertionError("La recherche ne doit pas être lancée automatiquement.")
+
+    monkeypatch.setattr(service, "_select_context", unexpected_search)
+    answer = run(service.ask(project_uuid, conversation.id, "Bonjour à toi", None, False))
+    assert answer.answer == "Bonjour."
+    assert answer.citations == []
+    assert calls[0]["input"][-1]["content"] == "Bonjour à toi"
+    assert "Contenu du projet" not in calls[0]["instructions"]
+
+
+def test_assistant_can_stage_then_request_global_validation_in_one_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage, service, project_id, job_id = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    conversation = storage.create_conversation(project_uuid, "Classement")
+    outputs = [
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="function_call",
+                    name="move_document",
+                    call_id="call-1",
+                    arguments=f'{{"job_id":"{job_id}","destination":"archives/note.txt"}}',
+                )
+            ],
+            output_text="",
+        ),
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="function_call",
+                    name="request_apply_pending_changes",
+                    call_id="call-2",
+                    arguments="{}",
+                )
+            ],
+            output_text="",
+        ),
+        SimpleNamespace(output=[], output_text="Le brouillon est prêt à valider."),
+    ]
+
+    class Responses:
+        async def create(self, **_kwargs: object) -> SimpleNamespace:
+            return outputs.pop(0)
+
+    monkeypatch.setattr(service.rag, "_client", lambda: SimpleNamespace(responses=Responses()))
+    answer = run(
+        service.ask(
+            project_uuid, conversation.id, "Déplace note.txt puis valide le brouillon", None, False
+        )
+    )
+    assert [action.status for action in answer.actions] == ["pending_local", "validation_requested"]
+    assert len(service.draft_for_project(project_uuid).actions) == 1
+    assert (tmp_path / "documents" / "note.txt").is_file()

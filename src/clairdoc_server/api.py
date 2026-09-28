@@ -31,6 +31,7 @@ from .models import (
     OrganizationPlan,
     Project,
     ProjectCreate,
+    ProjectDraft,
     ProjectMemory,
     ProjectOcrState,
     ProjectSourceAccess,
@@ -371,6 +372,19 @@ async def get_conversation(
 )
 async def delete_conversation(request: Request, project_id: UUID, conversation_id: UUID) -> None:
     try:
+        conversation = _storage(request).get_conversation(project_id, conversation_id)
+        if any(
+            action.status == "pending_local"
+            for message in conversation.messages
+            for action in message.actions
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Retirez ou validez les modifications en brouillon "
+                    "avant de supprimer cette conversation."
+                ),
+            )
         _storage(request).delete_conversation(project_id, conversation_id)
     except RecordNotFoundError as exc:
         raise _not_found("Conversation") from exc
@@ -414,6 +428,31 @@ async def complete_local_action(
 ) -> AssistantAction:
     try:
         return request.app.state.assistant.complete_local_action(
+            project_id, conversation_id, action_id
+        )
+    except RecordNotFoundError as exc:
+        raise _not_found("Action ou conversation") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@protected.get("/projects/{project_id}/draft", response_model=ProjectDraft)
+async def get_project_draft(request: Request, project_id: UUID) -> ProjectDraft:
+    try:
+        return request.app.state.assistant.draft_for_project(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet") from exc
+
+
+@protected.delete(
+    "/projects/{project_id}/conversations/{conversation_id}/local-actions/{action_id}",
+    response_model=AssistantAction,
+)
+async def cancel_local_action(
+    request: Request, project_id: UUID, conversation_id: UUID, action_id: UUID
+) -> AssistantAction:
+    try:
+        return request.app.state.assistant.cancel_local_action(
             project_id, conversation_id, action_id
         )
     except RecordNotFoundError as exc:

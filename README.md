@@ -36,7 +36,9 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Il exécute l
 - exploration contrôlée du dossier source et lecture bornée des fichiers texte ;
 - actions d'écriture limitées au dossier source, soumises à autorisation et journalisées.
 
-L'API `GET /api/v1/projects/{project_id}/source-access` indique si le dossier importé est aussi accessible sur le serveur, ce qui est utile pour l'exploration directe. Les demandes de copie, déplacement, renommage et mise à la corbeille formulées dans une conversation sont enregistrées comme actions en attente : l'application Tauri les exécute sur le PC utilisateur uniquement après confirmation, puis notifie le serveur pour actualiser l'index et l'historique. Le dossier source n'a pas besoin d'être monté sur le serveur pour ces actions.
+L'API `GET /api/v1/projects/{project_id}/source-access` indique si le dossier importé est aussi accessible sur le serveur, ce qui est utile pour l'exploration directe. Les demandes de copie, déplacement, renommage et mise à la corbeille formulées dans une conversation sont enregistrées dans un brouillon de projet consultable par `GET /api/v1/projects/{project_id}/draft`. L'application Tauri l'affiche avant de l'exécuter sur le PC utilisateur après confirmation globale, puis notifie le serveur pour actualiser l'index et l'historique. Une proposition peut être retirée sans modifier de fichier. Le dossier source n'a pas besoin d'être monté sur le serveur pour ces actions.
+
+L'assistant ne reçoit plus automatiquement les extraits RAG. Il utilise `search_project_documents` ou les autres outils de lecture lorsqu'une question nécessite le contenu des documents.
 
 ## Prérequis
 
