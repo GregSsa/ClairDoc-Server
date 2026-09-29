@@ -552,7 +552,7 @@ class RagService:
             raise NoDocumentsError("L'index ne contient aucun document.")
 
         query_vector = await self.embeddings.query(query, index)
-        ranked: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+        ranked: list[tuple[float, dict[str, Any], dict[str, Any], bool]] = []
         for document in documents:
             name = str(document.get("document_name", ""))
             path = str(document.get("source_relative_path", ""))
@@ -560,7 +560,7 @@ class RagService:
             name_score = keyword_similarity(query, f"{name} {path}")
             metadata_score = keyword_similarity(query, metadata)
             exact_name = query.casefold() in name.casefold()
-            document_ranked: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+            document_ranked: list[tuple[float, dict[str, Any], dict[str, Any], bool]] = []
             for chunk in document.get("chunks", []):
                 embedding = chunk.get("embedding", [])
                 if len(embedding) != len(query_vector):
@@ -573,7 +573,10 @@ class RagService:
                     + 0.20 * name_score
                     + (0.15 if exact_name else 0.0)
                 )
-                document_ranked.append((min(score, 1.0), document, chunk))
+                passage_relevant = document.get("indexing_mode") != "name_only" and (
+                    content_score > 0 or vector_score >= 0.55
+                )
+                document_ranked.append((min(score, 1.0), document, chunk, passage_relevant))
             document_ranked.sort(key=lambda item: item[0], reverse=True)
             ranked.extend(document_ranked[:2])
         ranked.sort(key=lambda item: item[0], reverse=True)
@@ -589,9 +592,9 @@ class RagService:
                     "id": number,
                     "name": str(document.get("document_name", "")),
                     "path": str(document.get("source_relative_path", "")),
-                    "passage": str(chunk.get("text", ""))[:1000],
+                    "passage": str(chunk.get("text", ""))[:1000] if passage_relevant else None,
                 }
-                for number, (_, document, chunk) in enumerate(selected)
+                for number, (_, document, chunk, passage_relevant) in enumerate(selected)
             ]
             response = await client.responses.create(
                 model=model,
@@ -621,7 +624,7 @@ class RagService:
                 selected = []
 
         grouped: dict[str, SearchDocument] = {}
-        for score, document, chunk in selected:
+        for score, document, chunk, passage_relevant in selected:
             job_id = str(document.get("job_id"))
             if job_id not in grouped:
                 if len(grouped) >= limit:
@@ -637,7 +640,7 @@ class RagService:
                 )
             result = grouped[job_id]
             if (
-                document.get("indexing_mode") != "name_only"
+                passage_relevant
                 and len(result.passages) < 2
                 and all(passage.chunk_index != chunk.get("index") for passage in result.passages)
             ):

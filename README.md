@@ -40,7 +40,7 @@ L'API `GET /api/v1/projects/{project_id}/source-access` indique si le dossier im
 
 L'assistant ne reçoit plus automatiquement les extraits RAG. Il utilise `search_project_documents` ou les autres outils de lecture lorsqu'une question nécessite le contenu des documents.
 
-La recherche dédiée `POST /api/v1/projects/{id}/search` accepte `query`, `mode` (`local` ou `ai`) et `limit` (1–20). Elle renvoie seulement les documents classés et jusqu'à deux passages verbatim avec leur page. Le mode `local` n'appelle aucun modèle conversationnel, mais l'encodage de la requête utilise le fournisseur d'embeddings de l'index (OpenAI ou local). Le mode `ai` envoie au modèle OpenAI au maximum 60 passages candidats bornés à 1 000 caractères, puis vérifie que les identifiants renvoyés existent dans l'index. Les documents indexés sur le nom seul n'ont pas de passage textuel.
+La recherche dédiée `POST /api/v1/projects/{id}/search` accepte `query`, `mode` (`local` ou `ai`) et `limit` (1–20). Elle renvoie seulement les documents classés et jusqu'à deux passages verbatim avec leur page. Un document retenu par son titre ou ses métadonnées, sans passage pertinent du contenu, est renvoyé sans extrait. Le mode `local` n'appelle aucun modèle conversationnel, mais l'encodage de la requête utilise le fournisseur d'embeddings de l'index (OpenAI ou local). Le mode `ai` envoie au modèle OpenAI au maximum 60 candidats bornés à 1 000 caractères par passage pertinent, puis vérifie que les identifiants renvoyés existent dans l'index. Les documents indexés sur le nom seul n'ont pas de passage textuel.
 
 ## Prérequis
 

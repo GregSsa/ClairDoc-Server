@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -21,12 +22,12 @@ def _client(tmp_path: Path) -> TestClient:
     )
 
 
-def _index(client: TestClient, monkeypatch: object) -> tuple[str, str, str]:
+def _index(client: TestClient, monkeypatch: object) -> tuple[str, str, str, str]:
     headers = {"X-ClairDoc-Key": "secret"}
     project_id = client.post("/api/v1/projects", headers=headers, json={"name": "Archives"}).json()[
         "id"
     ]
-    bill_id, image_id = str(uuid4()), str(uuid4())
+    bill_id, image_id, title_id = str(uuid4()), str(uuid4()), str(uuid4())
     client.app.state.storage.write_index(
         project_id,
         {
@@ -64,6 +65,21 @@ def _index(client: TestClient, monkeypatch: object) -> tuple[str, str, str]:
                         }
                     ],
                 },
+                {
+                    "job_id": title_id,
+                    "document_name": "facture-archive.pdf",
+                    "source_relative_path": "archives/facture-archive.pdf",
+                    "indexing_mode": "content",
+                    "metadata": {"category": "Autres"},
+                    "chunks": [
+                        {
+                            "index": 0,
+                            "page_number": 3,
+                            "text": "Réunion de copropriété sans rapport avec la recherche.",
+                            "embedding": [0.0, 1.0],
+                        }
+                    ],
+                },
             ],
         },
     )
@@ -72,14 +88,14 @@ def _index(client: TestClient, monkeypatch: object) -> tuple[str, str, str]:
         return [1.0, 0.0]
 
     monkeypatch.setattr(client.app.state.rag.embeddings, "query", query)
-    return project_id, bill_id, image_id
+    return project_id, bill_id, image_id, title_id
 
 
 def test_local_search_returns_ranked_verbatim_passages_and_name_only(
     tmp_path: Path, monkeypatch: object
 ) -> None:
     with _client(tmp_path) as client:
-        project_id, bill_id, image_id = _index(client, monkeypatch)
+        project_id, bill_id, image_id, title_id = _index(client, monkeypatch)
         headers = {"X-ClairDoc-Key": "secret"}
         path = f"/api/v1/projects/{project_id}/search"
         assert client.post(path, json={"query": "facture électricité"}).status_code == 401
@@ -90,11 +106,12 @@ def test_local_search_returns_ranked_verbatim_passages_and_name_only(
         assert results[0]["passages"][0]["text"] == "Facture électricité mars 2025"
         assert results[0]["passages"][0]["page_number"] == 2
         assert next(item for item in results if item["job_id"] == image_id)["passages"] == []
+        assert next(item for item in results if item["job_id"] == title_id)["passages"] == []
 
 
 def test_ai_search_selects_only_existing_passages(tmp_path: Path, monkeypatch: object) -> None:
     with _client(tmp_path) as client:
-        project_id, bill_id, _ = _index(client, monkeypatch)
+        project_id, bill_id, _, _ = _index(client, monkeypatch)
 
         class Responses:
             async def create(self, **_kwargs: object) -> SimpleNamespace:
@@ -115,9 +132,41 @@ def test_ai_search_selects_only_existing_passages(tmp_path: Path, monkeypatch: o
         )
 
 
+def test_ai_search_title_match_has_no_excerpt(tmp_path: Path, monkeypatch: object) -> None:
+    with _client(tmp_path) as client:
+        project_id, _, _, title_id = _index(client, monkeypatch)
+        seen_candidates: list[dict] = []
+
+        class Responses:
+            async def create(self, **kwargs: object) -> SimpleNamespace:
+                seen_candidates.extend(json.loads(str(kwargs["input"]))["candidates"])
+                title_number = next(
+                    item["id"] for item in seen_candidates if item["name"] == "facture-archive.pdf"
+                )
+                return SimpleNamespace(output_text=json.dumps({"ids": [title_number]}))
+
+        monkeypatch.setattr(
+            client.app.state.rag, "_client", lambda: SimpleNamespace(responses=Responses())
+        )
+        response = client.post(
+            f"/api/v1/projects/{project_id}/search",
+            headers={"X-ClairDoc-Key": "secret"},
+            json={"query": "facture électricité", "mode": "ai"},
+        )
+        assert response.status_code == 200
+        assert response.json()["results"][0]["job_id"] == title_id
+        assert response.json()["results"][0]["passages"] == []
+        assert (
+            next(item for item in seen_candidates if item["name"] == "facture-archive.pdf")[
+                "passage"
+            ]
+            is None
+        )
+
+
 def test_ai_search_requires_openai_key(tmp_path: Path, monkeypatch: object) -> None:
     with _client(tmp_path) as client:
-        project_id, _, _ = _index(client, monkeypatch)
+        project_id, _, _, _ = _index(client, monkeypatch)
         response = client.post(
             f"/api/v1/projects/{project_id}/search",
             headers={"X-ClairDoc-Key": "secret"},
