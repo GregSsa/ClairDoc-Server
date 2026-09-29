@@ -141,11 +141,13 @@ class LocalStorage:
         original_filename: str,
         project_id: UUID | None,
         source_relative_path: str | None = None,
+        ocr_enabled: bool = True,
     ) -> OcrJob:
         job = OcrJob(
             original_filename=original_filename,
             project_id=project_id,
             source_relative_path=source_relative_path,
+            ocr_enabled=ocr_enabled,
         )
         self.job_dir(job.id).mkdir(parents=True, exist_ok=False)
         self.save_job(job)
@@ -176,13 +178,20 @@ class LocalStorage:
         )
 
     def find_job_by_hash(
-        self, project_id: UUID, content_sha256: str, exclude_job_id: UUID | None = None
+        self,
+        project_id: UUID,
+        content_sha256: str,
+        source_relative_path: str | None,
+        ocr_enabled: bool,
+        exclude_job_id: UUID | None = None,
     ) -> OcrJob | None:
         for job in self.iter_jobs():
             if (
                 job.id != exclude_job_id
                 and job.project_id == project_id
                 and job.content_sha256 == content_sha256
+                and (job.source_relative_path or job.original_filename) == source_relative_path
+                and job.ocr_enabled == ocr_enabled
                 and job.status != JobStatus.FAILED
             ):
                 return job

@@ -59,6 +59,7 @@ class OcrJob(BaseModel):
     text_extraction_version: int = 0
     text_warning: str | None = None
     signature_preserved: bool = False
+    ocr_enabled: bool = True
 
 
 class ProjectOcrState(BaseModel):
@@ -102,6 +103,10 @@ class RuntimeUpdate(BaseModel):
 
 class OrganizationOptions(BaseModel):
     rename_files: bool = False
+    normalize_dates: bool = True
+    organize: bool = True
+    max_depth: int | None = Field(default=2, ge=1)
+    max_children: int | None = Field(default=None, ge=1)
 
 
 class IndexResponse(BaseModel):

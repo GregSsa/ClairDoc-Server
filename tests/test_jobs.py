@@ -1,9 +1,35 @@
+import asyncio
 from pathlib import Path
 from uuid import uuid4
+
+from pypdf import PdfWriter
 
 from clairdoc_server.config import Settings
 from clairdoc_server.jobs import OcrJobManager
 from clairdoc_server.storage import LocalStorage
+
+
+def test_pdf_without_ocr_keeps_original_and_indexes_name(tmp_path: Path) -> None:
+    from clairdoc_server.models import JobStatus, ProjectCreate
+
+    storage = LocalStorage(tmp_path / "data")
+    storage.initialize()
+    project = storage.create_project(ProjectCreate(name="Archives"))
+    job = storage.create_job("scan.pdf", project.id, "scan.pdf", ocr_enabled=False)
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    with storage.source_path(job.id).open("wb") as output:
+        writer.write(output)
+    original = storage.source_path(job.id).read_bytes()
+    manager = OcrJobManager(storage, Settings(data_dir=tmp_path / "data", ocr_command="missing"))
+
+    asyncio.run(manager._process(job.id))
+
+    result = storage.get_job(job.id)
+    assert result.status == JobStatus.COMPLETED
+    assert result.ocr_enabled is False
+    assert "nom uniquement" in result.text_warning
+    assert storage.output_path(job.id).read_bytes() == original
 
 
 def test_ocr_arguments_are_compatible_with_legacy_ocrmypdf(tmp_path: Path) -> None:

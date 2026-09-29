@@ -61,6 +61,20 @@ def test_read_pdf_ocr_by_name_without_source_access(tmp_path: Path) -> None:
         service._read_document(other.id, {"document": str(job.id)})
 
 
+def test_document_listing_includes_unindexed_jobs_and_paginates(tmp_path: Path) -> None:
+    storage, service, project_id, job_id = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    another = storage.create_job("scan.pdf", project_uuid, "scan.pdf")
+    first = service._list_documents(project_uuid, arguments={"offset": 0, "limit": 1})
+    second = service._list_documents(project_uuid, arguments={"offset": 1, "limit": 1})
+    assert first["total"] == 2
+    assert first["next_offset"] == 1
+    assert second["next_offset"] is None
+    assert {first["documents"][0]["job_id"], second["documents"][0]["job_id"]} == {
+        job_id, str(another.id)
+    }
+
+
 def test_rename_requires_permission_and_preserves_extension(tmp_path: Path) -> None:
     storage, service, project_id, job_id = make_service(tmp_path)
     project_uuid = UUID(project_id)

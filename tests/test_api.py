@@ -71,7 +71,7 @@ def test_health_reports_configuration(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
-        "version": "0.1.1",
+        "version": "0.1.2",
         "storage_ready": True,
         "ocr_available": False,
         "authentication_configured": True,
@@ -122,7 +122,7 @@ def test_connection_validates_api_key(tmp_path: Path) -> None:
 
     assert rejected.status_code == 401
     assert accepted.status_code == 200
-    assert accepted.json() == {"status": "authenticated", "version": "0.1.1"}
+    assert accepted.json() == {"status": "authenticated", "version": "0.1.2"}
 
 
 def test_missing_server_key_disables_protected_routes(tmp_path: Path) -> None:
@@ -247,7 +247,7 @@ def test_runtime_model_can_be_selected_and_persisted(tmp_path: Path) -> None:
     assert (tmp_path / "data" / "runtime.json").is_file()
 
 
-def test_duplicate_pdf_is_reused_within_project(tmp_path: Path) -> None:
+def test_duplicate_pdf_is_reused_only_at_same_path(tmp_path: Path) -> None:
     headers = {"X-ClairDoc-Key": "test-secret"}
     pdf = b"%PDF-1.4\n%%EOF"
     with make_client(tmp_path) as client:
@@ -264,10 +264,23 @@ def test_duplicate_pdf_is_reused_within_project(tmp_path: Path) -> None:
             headers=headers,
             files={"file": ("copy.pdf", pdf, "application/pdf")},
         )
+        repeat = client.post(
+            f"/api/v1/ocr/jobs?project_id={project_id}",
+            headers=headers,
+            files={"file": ("first.pdf", pdf, "application/pdf")},
+        )
+        no_ocr = client.post(
+            f"/api/v1/document/jobs?project_id={project_id}&ocr_enabled=false",
+            headers=headers,
+            files={"file": ("first.pdf", pdf, "application/pdf")},
+        )
 
     assert paused.json()["paused"] is True
-    assert duplicate.json()["id"] == first.json()["id"]
-    assert len(list((tmp_path / "data" / "jobs").iterdir())) == 1
+    assert duplicate.json()["id"] != first.json()["id"]
+    assert repeat.json()["id"] == first.json()["id"]
+    assert no_ocr.json()["id"] != first.json()["id"]
+    assert no_ocr.json()["ocr_enabled"] is False
+    assert len(list((tmp_path / "data" / "jobs").iterdir())) == 3
 
 
 def test_index_requires_openai_key(tmp_path: Path) -> None:

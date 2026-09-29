@@ -541,7 +541,15 @@ async def create_organization_plan(
             if payload.rename_files
             else None
         )
-        return request.app.state.organization.build_plan(project_id, payload.rename_files, names)
+        return request.app.state.organization.build_plan(
+            project_id,
+            payload.rename_files,
+            names,
+            normalize_dates=payload.normalize_dates,
+            organize=payload.organize,
+            max_depth=payload.max_depth,
+            max_children=payload.max_children,
+        )
     except RecordNotFoundError as exc:
         raise HTTPException(
             status_code=409,
@@ -577,6 +585,7 @@ async def create_document_job(
     file: Annotated[UploadFile, File(description="Document à analyser")],
     project_id: Annotated[UUID | None, Query()] = None,
     source_relative_path: Annotated[str | None, Query(max_length=2000)] = None,
+    ocr_enabled: Annotated[bool, Query()] = True,
 ) -> OcrJob:
     return await _create_document_job(
         request,
@@ -584,6 +593,7 @@ async def create_document_job(
         project_id,
         SUPPORTED_EXTENSIONS,
         source_relative_path,
+        ocr_enabled,
     )
 
 
@@ -593,6 +603,7 @@ async def _create_document_job(
     project_id: UUID | None,
     allowed_extensions: set[str],
     source_relative_path: str | None,
+    ocr_enabled: bool = True,
 ) -> OcrJob:
     storage = _storage(request)
     if project_id is not None:
@@ -615,7 +626,7 @@ async def _create_document_job(
             raise HTTPException(status_code=400, detail="Chemin relatif source invalide.")
         source_relative_path = relative.as_posix()
 
-    job = storage.create_job(original_filename, project_id, source_relative_path)
+    job = storage.create_job(original_filename, project_id, source_relative_path, ocr_enabled)
     input_path = storage.source_path(job.id)
     total_bytes = 0
     signature = b""
@@ -653,7 +664,13 @@ async def _create_document_job(
     job.input_bytes = total_bytes
     job.content_sha256 = digest.hexdigest()
     if project_id is not None:
-        duplicate = storage.find_job_by_hash(project_id, job.content_sha256, job.id)
+        duplicate = storage.find_job_by_hash(
+            project_id,
+            job.content_sha256,
+            source_relative_path or original_filename,
+            ocr_enabled,
+            job.id,
+        )
         if duplicate is not None:
             storage.delete_job(job.id)
             return duplicate

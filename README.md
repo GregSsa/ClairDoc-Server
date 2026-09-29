@@ -16,7 +16,7 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Il exécute l
 - traitement concurrent configurable, limité à un travail par défaut.
 - liste persistante des projets et travaux OCR ;
 - pause, reprise et relance des travaux en échec ;
-- détection SHA-256 des PDF identiques dans un même projet ;
+- réutilisation SHA-256 des fichiers inchangés au même chemin et avec le même réglage OCR ;
 - extraction du texte des PDF OCRisés, découpage et embeddings OpenAI ;
 - index sémantique JSON local, avec réutilisation des documents inchangés ;
 - questions/réponses RAG avec extraits sources.
@@ -108,11 +108,14 @@ leur calcul utilise le CPU et prend du temps. Les morceaux locaux sont plus cour
 pour limiter la troncature du modèle.
 
 Le LLM de conversation et le renommage automatique utilisent toujours `OPENAI_API_KEY`.
-L'option **Autoriser l'IA à proposer de nouveaux noms** est désactivée par défaut.
-Quand elle est activée, le serveur transmet au LLM jusqu'à 6 000 caractères de texte
-par document, par lots de dix, et prépare uniquement des propositions. Aucun fichier
-n'est renommé avant validation du plan. Sans cette option, les noms sont conservés,
-avec suffixe en cas de doublon dans le même dossier cible.
+L'application propose le renommage pour le premier nettoyage. Quand il est activé,
+le serveur garde les noms déjà explicites et ne transmet au LLM que les documents
+dont le nom est ambigu, jusqu'à 6 000 caractères de texte chacun, par lots de dix.
+Les dates identifiables dans les noms sont normalisées en `JJ-MM-AAAA`. Le plan peut
+limiter la profondeur et le nombre de sous-dossiers directs, et tous les documents
+indexés y figurent. Aucun fichier n'est renommé avant validation du plan.
+Le paramètre `ocr_enabled=false` sur l'import conserve les PDF inchangés et extrait
+seulement leur éventuel texte existant ; les images sans OCR restent trouvables par nom.
 
 L'assistant dispose de `read_project_document` pour lire le texte extrait d'un PDF
 par nom, chemin ou identifiant, même si son dossier source n'est pas accessible au serveur.

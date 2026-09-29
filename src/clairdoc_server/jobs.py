@@ -135,6 +135,9 @@ class OcrJobManager:
         await self._wait_if_paused(job.project_id)
         job = self.storage.get_job(job_id)
         source_path = self.storage.source_path(job_id)
+        if not job.ocr_enabled:
+            await self._process_without_ocr(job_id, source_path)
+            return
         if source_path.suffix.lower() != ".pdf":
             await self._process_non_pdf(job_id, source_path)
             return
@@ -205,6 +208,37 @@ class OcrJobManager:
         job.completed_at = utc_now()
         job.error = diagnostic[-4000:] or f"OCRmyPDF a retourné le code {code}."
         self.storage.save_job(job)
+
+    async def _process_without_ocr(self, job_id: UUID, source_path: Path) -> None:
+        job = self.storage.get_job(job_id)
+        job.status = JobStatus.RUNNING
+        job.started_at = utc_now()
+        job.error = None
+        self.storage.save_job(job)
+        try:
+            if source_path.suffix.lower() == ".pdf":
+                await asyncio.to_thread(
+                    shutil.copyfile, source_path, self.storage.output_path(job_id)
+                )
+                text = await asyncio.to_thread(self._extract_pdf_text, job_id)
+            elif source_path.suffix.lower() in IMAGE_EXTENSIONS:
+                text = ""
+                self.storage.text_path(job_id).write_text(text, encoding="utf-8")
+            else:
+                text = await asyncio.to_thread(extract_document_text, source_path)
+                self.storage.text_path(job_id).write_text(text, encoding="utf-8")
+            job.status = JobStatus.COMPLETED
+            job.completed_at = utc_now()
+            job.text_extraction_version = EXTRACTION_VERSION
+            job.text_warning = (
+                None if text.strip() else "Aucun texte sans OCR : indexation par nom uniquement."
+            )
+            self.storage.save_job(job)
+        except (OSError, ValueError, RuntimeError) as exc:
+            job.status = JobStatus.FAILED
+            job.completed_at = utc_now()
+            job.error = f"Extraction sans OCR impossible : {exc}"[-4000:]
+            self.storage.save_job(job)
 
     async def _process_signed_pdf(self, job_id: UUID, source_path: Path) -> None:
         # Never pass --invalidate-digital-signatures. The indexed PDF must stay byte-for-byte
