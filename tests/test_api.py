@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 from time import monotonic, sleep
 from uuid import UUID
@@ -70,7 +71,7 @@ def test_health_reports_configuration(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "storage_ready": True,
         "ocr_available": False,
         "authentication_configured": True,
@@ -85,6 +86,32 @@ def test_protected_route_requires_api_key(tmp_path: Path) -> None:
     assert response.status_code == 401
 
 
+def test_index_export_streams_model_and_documents_with_auth(tmp_path: Path) -> None:
+    headers = {"X-ClairDoc-Key": "test-secret"}
+    with make_client(tmp_path) as client:
+        project = client.post("/api/v1/projects", headers=headers, json={"name": "Maison"}).json()
+        project_id = project["id"]
+        client.app.state.storage.write_index(UUID(project_id), {
+            "version": 3, "project_id": project_id,
+            "embedding_provider": "local",
+            "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            "embedding_dimensions": 384,
+            "documents": [{
+                "job_id": "doc-1",
+                "document_name": "Facture.pdf",
+                "chunks": [{"text": "facture", "embedding": [0.1] * 384}],
+            }],
+        })
+        path = f"/api/v1/projects/{project_id}/index/export"
+        assert client.get(path).status_code == 401
+        exported = client.get(path, headers=headers)
+        assert exported.status_code == 200
+        lines = [json.loads(line) for line in exported.text.splitlines()]
+        assert lines[0]["embedding_dimensions"] == 384
+        assert lines[0]["document_count"] == 1
+        assert lines[1]["document"]["chunks"][0]["embedding"] == [0.1] * 384
+
+
 def test_connection_validates_api_key(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         rejected = client.get("/api/v1/connection")
@@ -95,7 +122,7 @@ def test_connection_validates_api_key(tmp_path: Path) -> None:
 
     assert rejected.status_code == 401
     assert accepted.status_code == 200
-    assert accepted.json() == {"status": "authenticated", "version": "0.1.0"}
+    assert accepted.json() == {"status": "authenticated", "version": "0.1.1"}
 
 
 def test_missing_server_key_disables_protected_routes(tmp_path: Path) -> None:

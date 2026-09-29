@@ -245,3 +245,5 @@ uv run pytest
 ```
 
 Le prompt système est créé dans `data/prompts/rag-system.txt` au premier appel. Il peut être adapté sans modifier le code, puis sera repris lors des questions suivantes.
+
+L'application peut conserver l'index d'un projet pour rechercher sans serveur. Après l'indexation, le bouton **Rendre disponible hors connexion** appelle l'export protégé `GET /api/v1/projects/{id}/index/export`. Il transmet les passages, vecteurs, métadonnées et la configuration du modèle sous forme de lignes JSON ; ni les fichiers originaux ni la clé OpenAI ne sont exportés. Le transfert doit être relancé après toute mise à jour de l'index.

@@ -1,12 +1,13 @@
 import asyncio
 import hashlib
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from openai import OpenAIError
 
 from . import __version__
@@ -264,6 +265,42 @@ async def estimate_project_index(request: Request, project_id: UUID) -> IndexEst
         return await request.app.state.rag.estimate_project(project_id)
     except RecordNotFoundError as exc:
         raise _not_found("Projet") from exc
+
+
+@protected.get("/projects/{project_id}/index/export")
+async def export_project_index(request: Request, project_id: UUID) -> StreamingResponse:
+    storage = _storage(request)
+    try:
+        project = storage.get_project(project_id)
+        index = storage.read_index(project_id)
+    except RecordNotFoundError as exc:
+        raise _not_found("Projet ou index") from exc
+    if index.get("project_id") != str(project_id) or index.get("version") != 3:
+        raise HTTPException(status_code=409, detail="L'index du projet est incompatible.")
+
+    def records():
+        header = {
+            "type": "header",
+            "format": "clairdoc-index-1",
+            "project_id": str(project_id),
+            "project_name": project.name,
+            "embedding_provider": index["embedding_provider"],
+            "embedding_model": index["embedding_model"],
+            "embedding_dimensions": index["embedding_dimensions"],
+            "document_count": len(index["documents"]),
+        }
+        yield json.dumps(header, ensure_ascii=False) + "\n"
+        for document in index["documents"]:
+            yield json.dumps({"type": "document", "document": document}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        records(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": "attachment; filename=clairdoc-index.ndjson",
+        },
+    )
 
 
 @protected.get("/projects/{project_id}/documents", response_model=DocumentLibrary)
