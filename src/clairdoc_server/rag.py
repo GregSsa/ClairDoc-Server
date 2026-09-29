@@ -118,6 +118,11 @@ def _extract_pdf_pages(path: Path) -> list[tuple[int | None, str]]:
     return [(number, page.extract_text() or "") for number, page in enumerate(reader.pages, 1)]
 
 
+def _signed_pdf_pages(path: Path) -> list[tuple[int | None, str]]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return [(number, page) for number, page in enumerate(text.split("\n\f\n"), 1)]
+
+
 def extract_metadata(text: str, filename: str) -> dict[str, Any]:
     sample = text[:12000]
     lowered = f"{filename}\n{sample}".lower()
@@ -345,7 +350,10 @@ class RagService:
                 reused += 1
                 continue
             to_embed += 1
-            if self.storage.output_path(job.id).is_file():
+            if job.signature_preserved:
+                pages = await asyncio.to_thread(_signed_pdf_pages, self.storage.text_path(job.id))
+                document_characters = sum(len(text.strip()) for _, text in pages)
+            elif self.storage.output_path(job.id).is_file():
                 pages = await asyncio.to_thread(
                     _extract_pdf_pages, self.storage.output_path(job.id)
                 )
@@ -418,7 +426,11 @@ class RagService:
                     reused += 1
                     continue
 
-                if self.storage.output_path(job.id).is_file():
+                if job.signature_preserved:
+                    pages = await asyncio.to_thread(
+                        _signed_pdf_pages, self.storage.text_path(job.id)
+                    )
+                elif self.storage.output_path(job.id).is_file():
                     pages = await asyncio.to_thread(
                         _extract_pdf_pages, self.storage.output_path(job.id)
                     )

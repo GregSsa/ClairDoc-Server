@@ -117,3 +117,86 @@ def test_empty_pdf_retries_ocr_once_then_completes_by_name(tmp_path: Path, monke
     assert storage.input_path(job.id).read_bytes() == b"original"
     asyncio.run(manager.recover_project_text(project.id))
     assert len(calls) == 2  # Blank documents do not trigger an infinite OCR loop.
+
+
+def test_signed_pdf_keeps_original_and_indexes_separate_ocr_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import asyncio
+
+    from clairdoc_server.models import JobStatus, ProjectCreate
+    from clairdoc_server.rag import RagService
+
+    storage = LocalStorage(tmp_path / "data")
+    storage.initialize()
+    storage.update_runtime({"embedding_provider": "local"})
+    project = storage.create_project(ProjectCreate(name="Maison"))
+    job = storage.create_job("preuve.pdf", project.id, "preuve.pdf")
+    original = b"original-signed-document"
+    storage.source_path(job.id).write_bytes(original)
+    manager = OcrJobManager(storage, Settings(data_dir=tmp_path / "data"))
+    monkeypatch.setattr(manager, "_resolve_command", lambda: "ocrmypdf")
+    monkeypatch.setattr(manager, "_resolve_tesseract", lambda: "tesseract")
+    monkeypatch.setattr(
+        manager, "_signed_pdf_page_text", lambda _path: (["Texte existant " * 10, "Signature"], [])
+    )
+    monkeypatch.setattr("clairdoc_server.jobs.shutil.which", lambda _name: "gs")
+
+    async def run(arguments):
+        if arguments[0] == "ocrmypdf":
+            return 6, b"", b"DigitalSignatureError: Input PDF has a digital signature."
+        assert "-dFirstPage=2" in arguments
+        Path(
+            next(item.split("=", 1)[1] for item in arguments if item.startswith("-sOutputFile="))
+        ).write_bytes(b"image")
+        return 0, b"", b""
+
+    async def image_ocr(path):
+        assert path.read_bytes() == b"image"
+        return "Texte OCR de la page deux"
+
+    monkeypatch.setattr(manager, "_run_text_process", run)
+    monkeypatch.setattr(manager, "_ocr_image", image_ocr)
+    asyncio.run(manager._process(job.id))
+    processed = storage.get_job(job.id)
+    assert processed.status == JobStatus.COMPLETED
+    assert processed.signature_preserved
+    assert storage.output_path(job.id).read_bytes() == original
+    assert storage.source_path(job.id).read_bytes() == original
+    assert "PDF signé conservé intact" in processed.text_warning
+    assert "Texte OCR de la page deux" in storage.text_path(job.id).read_text(encoding="utf-8")
+
+    rag = RagService(storage, Settings(data_dir=tmp_path / "data"))
+    monkeypatch.setattr(
+        rag.embeddings, "_embed_local", lambda texts, _model, _query: [[1.0] * 384 for _ in texts]
+    )
+    asyncio.run(rag.index_project(project.id))
+    chunks = storage.read_index(project.id)["documents"][0]["chunks"]
+    assert any(chunk["page_number"] == 2 and "Texte OCR" in chunk["text"] for chunk in chunks)
+
+
+def test_signed_pdf_without_renderer_is_imported_by_name(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    from clairdoc_server.models import JobStatus, ProjectCreate
+
+    storage = LocalStorage(tmp_path / "data")
+    storage.initialize()
+    project = storage.create_project(ProjectCreate(name="Maison"))
+    job = storage.create_job("scan-signe.pdf", project.id, "scan-signe.pdf")
+    storage.source_path(job.id).write_bytes(b"signed-original")
+    manager = OcrJobManager(storage, Settings(data_dir=tmp_path / "data"))
+    monkeypatch.setattr(manager, "_resolve_command", lambda: "ocrmypdf")
+    monkeypatch.setattr(manager, "_signed_pdf_page_text", lambda _path: ([""], []))
+    monkeypatch.setattr("clairdoc_server.jobs.shutil.which", lambda _name: None)
+
+    async def run(_arguments):
+        return 6, b"", b"DigitalSignatureError: Input PDF has a digital signature."
+
+    monkeypatch.setattr(manager, "_run_text_process", run)
+    asyncio.run(manager._process(job.id))
+    processed = storage.get_job(job.id)
+    assert processed.status == JobStatus.COMPLETED
+    assert processed.signature_preserved
+    assert "indexation par nom uniquement" in processed.text_warning
+    assert storage.output_path(job.id).read_bytes() == b"signed-original"

@@ -16,6 +16,7 @@ from .storage import LocalStorage, RecordNotFoundError
 
 logger = logging.getLogger(__name__)
 EXTRACTION_VERSION = 2
+MIN_EXISTING_PAGE_TEXT = 80
 
 
 class OcrJobManager:
@@ -148,6 +149,7 @@ class OcrJobManager:
         job.status = JobStatus.RUNNING
         job.started_at = utc_now()
         job.error = None
+        job.signature_preserved = False
         self.storage.save_job(job)
 
         self.storage.output_path(job_id).unlink(missing_ok=True)
@@ -188,10 +190,109 @@ class OcrJobManager:
             logger.info("Travail OCR terminé : %s", job_id)
             return
 
+        if "DigitalSignatureError" in diagnostic or "has a digital signature" in diagnostic:
+            try:
+                await self._process_signed_pdf(job_id, source_path)
+            except Exception as exc:
+                logger.exception("Extraction du PDF signé impossible : %s", job_id)
+                job.status = JobStatus.FAILED
+                job.completed_at = utc_now()
+                job.error = f"PDF signé : extraction sans modification impossible : {exc}"[-4000:]
+                self.storage.save_job(job)
+            return
+
         job.status = JobStatus.FAILED
         job.completed_at = utc_now()
         job.error = diagnostic[-4000:] or f"OCRmyPDF a retourné le code {code}."
         self.storage.save_job(job)
+
+    async def _process_signed_pdf(self, job_id: UUID, source_path: Path) -> None:
+        # Never pass --invalidate-digital-signatures. The indexed PDF must stay byte-for-byte
+        # identical to the signed input; OCR text lives only in the separate sidecar.
+        await asyncio.to_thread(shutil.copyfile, source_path, self.storage.output_path(job_id))
+        pages, fields = await asyncio.to_thread(self._signed_pdf_page_text, source_path)
+        blank_pages = [
+            number
+            for number, text in enumerate(pages, 1)
+            if len(text.strip()) < MIN_EXISTING_PAGE_TEXT
+        ]
+        warnings: list[str] = []
+        renderer = shutil.which("gs") if blank_pages else None
+        if blank_pages and (renderer is None or self._resolve_tesseract() is None):
+            warnings.append("Ghostscript ou Tesseract indisponible pour les pages scannées")
+        elif renderer is not None:
+            with tempfile.TemporaryDirectory(
+                prefix="signed-ocr-", dir=self.storage.job_dir(job_id)
+            ) as folder:
+                image = Path(folder) / "page.png"
+                for number in blank_pages:
+                    image.unlink(missing_ok=True)
+                    try:
+                        code, _, stderr = await self._run_text_process(
+                            [
+                                renderer,
+                                "-q",
+                                "-dSAFER",
+                                "-dBATCH",
+                                "-dNOPAUSE",
+                                "-sDEVICE=pnggray",
+                                "-r300",
+                                f"-dFirstPage={number}",
+                                f"-dLastPage={number}",
+                                f"-sOutputFile={image}",
+                                str(source_path),
+                            ]
+                        )
+                    except (OSError, TimeoutError) as exc:
+                        warnings.append(f"page {number} : rendu impossible ({exc})")
+                        continue
+                    if code != 0 or not image.is_file():
+                        detail = stderr.decode("utf-8", errors="replace")[-180:]
+                        warnings.append(f"page {number} : rendu impossible ({detail})")
+                        continue
+                    try:
+                        ocr_text = await self._ocr_image(image)
+                        if ocr_text.strip():
+                            pages[number - 1] = "\n".join(
+                                part for part in (pages[number - 1], ocr_text) if part.strip()
+                            )
+                    except (OSError, RuntimeError, TimeoutError) as exc:
+                        warnings.append(f"page {number} : OCR impossible ({exc})")
+                    finally:
+                        image.unlink(missing_ok=True)
+        if fields and pages:
+            pages[-1] += "\n" + "\n".join(fields)
+        text = "\n\f\n".join(pages)
+        self.storage.text_path(job_id).write_text(text, encoding="utf-8")
+        job = self.storage.get_job(job_id)
+        job.status = JobStatus.COMPLETED
+        job.completed_at = utc_now()
+        job.error = None
+        job.text_extraction_version = EXTRACTION_VERSION
+        job.signature_preserved = True
+        job.text_warning = "PDF signé conservé intact."
+        if not text.strip():
+            job.text_warning += " Aucun texte récupéré : indexation par nom uniquement."
+        if warnings:
+            job.text_warning += " " + "; ".join(warnings)[:1000]
+        self.storage.save_job(job)
+        with (self.storage.job_dir(job_id) / "ocr.log").open("a", encoding="utf-8") as log:
+            log.write("\nPDF signé conservé intact ; texte extrait séparément.\n")
+            if warnings:
+                log.write("\n".join(warnings) + "\n")
+
+    @staticmethod
+    def _signed_pdf_page_text(source_path: Path) -> tuple[list[str], list[str]]:
+        reader = PdfReader(source_path)
+        pages = [page.extract_text() or "" for page in reader.pages]
+        fields: list[str] = []
+        for name, field in (reader.get_fields() or {}).items():
+            if field.get("/FT") == "/Sig":
+                continue
+            value = field.get("/V")
+            if value is not None:
+                fields.append(f"{name}: {value}")
+        return pages, fields
 
     def _extract_pdf_text(self, job_id: UUID) -> str:
         # The OCR sidecar omits pages with existing text. Read the whole resulting PDF.

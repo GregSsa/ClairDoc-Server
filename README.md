@@ -11,6 +11,7 @@ Serveur local de ClairDoc, prévu pour fonctionner sur un PC fixe. Il exécute l
 - file d'attente OCR avec reprise après redémarrage ;
 - paramètres OCR compatibles avec les versions distribuées par Ubuntu (`--skip-text`) ;
 - PDF OCRisé et texte sidecar téléchargeables ;
+- PDF signés conservés à l'identique : texte extrait dans un fichier séparé, sans invalider la signature ;
 - limites de taille, validation PDF et journaux locaux ;
 - traitement concurrent configurable, limité à un travail par défaut.
 - liste persistante des projets et travaux OCR ;
@@ -234,6 +235,8 @@ Le serveur produit un PDF standard (`--output-type pdf`), sans conversion PDF/A,
 pour préserver l'espace colorimétrique et éviter `ColorConversionNeededError`.
 Le texte est ensuite extrait de toutes les pages du PDF produit, ainsi que des valeurs
 des champs de formulaire ; le sidecar OCR seul ne contient pas le texte des pages sautées.
+
+Pour un PDF signé, OCRmyPDF refuse de modifier le document. ClairDoc conserve alors la copie PDF octet pour octet, extrait la couche texte existante et, si Ghostscript et Tesseract sont disponibles, analyse les pages sans texte ou presque via des images temporaires. Le résultat OCR est stocké seulement dans `output.txt` et sert à l'indexation avec les numéros de page. Si aucune extraction n'est possible, l'import réussit quand même avec un avertissement et une indexation par nom seul. Après mise à jour du serveur, relancez les travaux précédemment en échec depuis l'application.
 
 
 ```bash

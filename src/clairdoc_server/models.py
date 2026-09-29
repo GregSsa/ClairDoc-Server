@@ -58,6 +58,7 @@ class OcrJob(BaseModel):
     error: str | None = None
     text_extraction_version: int = 0
     text_warning: str | None = None
+    signature_preserved: bool = False
 
 
 class ProjectOcrState(BaseModel):
