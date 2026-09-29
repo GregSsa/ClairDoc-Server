@@ -33,6 +33,9 @@ Une action de fichier est ajoutée au brouillon du projet, sans modifier le disq
 qu'elle est effectuée avant la validation du brouillon dans l'application. Si l'utilisateur demande
 explicitement de valider/appliquer le brouillon, appelle request_apply_pending_changes. Sinon,
 n'appelle jamais cet outil. Explique brièvement chaque action réellement effectuée.
+Plusieurs actions peuvent être préparées successivement sur le même job_id avant validation.
+Le brouillon suit le chemin virtuel après chaque renommage ou déplacement. Consulte
+list_pending_changes pour poursuivre une chaîne commencée dans une autre conversation.
 Réponds en français."""
 
 
@@ -337,6 +340,7 @@ class AssistantService:
                             arguments,
                             allow_write_actions,
                             defer_file_actions=True,
+                            staged_actions=actions,
                         )
                         if call.name == "read_project_document" and result.get("text"):
                             citation = Citation(
@@ -349,35 +353,6 @@ class AssistantService:
                             )
                             citations.append(citation)
                             result["citation"] = f"[{len(citations)}]"
-                    if action.status == "pending_local" and any(
-                        previous.status == "pending_local"
-                        and previous.arguments.get("job_id") == action.arguments.get("job_id")
-                        for previous in actions
-                    ):
-                        result = {
-                            "ok": False,
-                            "error": "Une proposition pour ce document existe déjà dans ce tour.",
-                        }
-                        action = AssistantAction(
-                            tool=call.name, status="failed", summary=result["error"]
-                        )
-                    if (
-                        action.status == "pending_local"
-                        and self._pending_destination(action)
-                        and any(
-                            previous.status == "pending_local"
-                            and self._pending_destination(previous)
-                            == self._pending_destination(action)
-                            for previous in actions
-                        )
-                    ):
-                        result = {
-                            "ok": False,
-                            "error": "Cette destination existe déjà dans le brouillon de ce tour.",
-                        }
-                        action = AssistantAction(
-                            tool=call.name, status="failed", summary=result["error"]
-                        )
                 except (ValueError, OSError, KeyError) as exc:
                     result = {"ok": False, "error": str(exc)}
                     action = AssistantAction(tool=call.name, status="failed", summary=str(exc))
@@ -501,21 +476,22 @@ class AssistantService:
         arguments: dict[str, Any],
         allow_write: bool,
         defer_file_actions: bool = False,
+        staged_actions: list[AssistantAction] | None = None,
     ) -> tuple[dict[str, Any], AssistantAction]:
         if name == "read_project_document":
-            result = self._read_document(project_id, arguments)
+            result = self._read_document(project_id, arguments, staged_actions)
             return result, AssistantAction(
                 tool=name, status="completed", summary=f"Texte de {result['name']} consulté."
             )
         if name == "list_project_documents":
-            result = self._list_documents(project_id)
+            result = self._list_documents(project_id, staged_actions)
             return result, AssistantAction(
                 tool=name,
                 status="completed",
                 summary=f"{len(result['documents'])} document(s) listé(s).",
             )
         if name == "search_project_files":
-            result = self._search_files(project_id, str(arguments["query"]))
+            result = self._search_files(project_id, str(arguments["query"]), staged_actions)
             return result, AssistantAction(
                 tool=name,
                 status="completed",
@@ -532,7 +508,7 @@ class AssistantService:
             "rename_document",
             "delete_document",
         }:
-            return self._prepare_local_action(project_id, name, arguments)
+            return self._prepare_local_action(project_id, name, arguments, staged_actions or [])
         if not allow_write:
             summary = "Action non exécutée : autorisation requise dans l'interface."
             return {"ok": False, "requires_confirmation": True}, AssistantAction(
@@ -580,7 +556,11 @@ class AssistantService:
         return destination
 
     def _prepare_local_action(
-        self, project_id: UUID, name: str, arguments: dict[str, Any]
+        self,
+        project_id: UUID,
+        name: str,
+        arguments: dict[str, Any],
+        staged_actions: list[AssistantAction] | None = None,
     ) -> tuple[dict[str, Any], AssistantAction]:
         if not self.storage.get_project(project_id).source_root:
             raise ValueError("Ce projet n'a pas de dossier local lié à l'application.")
@@ -588,7 +568,11 @@ class AssistantService:
         job = self.storage.get_job(UUID(job_id))
         if job.project_id != project_id or not job.content_sha256:
             raise ValueError("Document source inconnu ou non vérifiable.")
-        source = self._relative_file_path(job.source_relative_path or job.original_filename)
+        paths, occupied = self._virtual_project_paths(project_id, staged_actions or [])
+        current = paths[job_id]
+        if current is None:
+            raise ValueError("Ce document est déjà destiné à la corbeille dans le brouillon.")
+        source = self._relative_file_path(current)
         prepared = {"job_id": job_id}
         if name in {"copy_document", "move_document"}:
             destination = self._relative_file_path(str(arguments["destination"]))
@@ -617,13 +601,8 @@ class AssistantService:
         destination = prepared.get("destination")
         if name == "rename_document":
             destination = str(PurePosixPath(source).parent / prepared["new_name"])
-        for existing in self.draft_for_project(project_id).actions:
-            if str(existing.job_id) == job_id and (
-                name != "copy_document" or existing.tool != "copy_document"
-            ):
-                raise ValueError("Une modification de ce document est déjà dans le brouillon.")
-            if destination and existing.destination_relative_path == destination:
-                raise ValueError("Cette destination est déjà utilisée dans le brouillon.")
+        if destination and destination in occupied:
+            raise ValueError("Cette destination est déjà utilisée par un document ou le brouillon.")
         summary = {
             "copy_document": "Copier",
             "move_document": "Déplacer",
@@ -644,35 +623,67 @@ class AssistantService:
             "ok": False,
             "requires_local_confirmation": True,
             "action_id": str(action.id),
+            "source_relative_path": source,
+            "destination_relative_path": destination,
         }, action
+
+    def _virtual_project_paths(
+        self, project_id: UUID, staged_actions: list[AssistantAction] | None = None
+    ) -> tuple[dict[str, str | None], set[str]]:
+        paths: dict[str, str | None] = {
+            str(job.id): job.source_relative_path or job.original_filename
+            for job in self.storage.jobs_for_project(project_id)
+        }
+        occupied = {path for path in paths.values() if path}
+        pending = [action for _, action in self._pending_local_actions(project_id)]
+        pending.extend(
+            action for action in (staged_actions or []) if action.status == "pending_local"
+        )
+        for action in pending:
+            job_id = str(action.arguments.get("job_id", ""))
+            source = action.source_relative_path
+            if job_id not in paths or paths[job_id] != source:
+                raise ValueError("Le brouillon contient une chaîne de chemins incohérente.")
+            destination = self._pending_destination(action)
+            if action.tool in {"move_document", "rename_document", "delete_document"}:
+                occupied.discard(source)
+                paths[job_id] = destination
+            if destination:
+                occupied.add(destination)
+        return paths, occupied
+
+    def _pending_local_actions(self, project_id: UUID) -> list[tuple[UUID, AssistantAction]]:
+        ordered: list[tuple[Any, str, int, UUID, AssistantAction]] = []
+        for conversation in self.storage.conversations_for_project(project_id):
+            for message in conversation.messages:
+                for position, action in enumerate(message.actions):
+                    if (
+                        action.status == "pending_local"
+                        and action.source_relative_path
+                        and action.expected_sha256
+                        and action.arguments.get("job_id")
+                    ):
+                        ordered.append(
+                            (message.created_at, str(message.id), position, conversation.id, action)
+                        )
+        ordered.sort(key=lambda row: (row[0], row[1], row[2]))
+        return [(conversation_id, action) for _, _, _, conversation_id, action in ordered]
 
     def draft_for_project(self, project_id: UUID) -> ProjectDraft:
         actions: list[DraftAction] = []
-        for conversation in self.storage.conversations_for_project(project_id):
-            for message in conversation.messages:
-                for action in message.actions:
-                    if (
-                        action.status != "pending_local"
-                        or not action.source_relative_path
-                        or not action.expected_sha256
-                    ):
-                        continue
-                    job_id = action.arguments.get("job_id")
-                    if not job_id:
-                        continue
-                    destination = self._pending_destination(action)
-                    actions.append(
-                        DraftAction(
-                            id=action.id,
-                            conversation_id=conversation.id,
-                            job_id=UUID(job_id),
-                            tool=action.tool,
-                            summary=action.summary,
-                            source_relative_path=action.source_relative_path,
-                            destination_relative_path=destination,
-                            expected_sha256=action.expected_sha256,
-                        )
-                    )
+        for conversation_id, action in self._pending_local_actions(project_id):
+            actions.append(
+                DraftAction(
+                    id=action.id,
+                    conversation_id=conversation_id,
+                    job_id=UUID(action.arguments["job_id"]),
+                    tool=action.tool,
+                    summary=action.summary,
+                    source_relative_path=action.source_relative_path,
+                    destination_relative_path=self._pending_destination(action),
+                    expected_sha256=action.expected_sha256,
+                )
+            )
         return ProjectDraft(project_id=project_id, actions=actions)
 
     def cancel_local_action(
@@ -690,6 +701,10 @@ class AssistantService:
         )
         if action is None or action.status != "pending_local":
             raise ValueError("Modification en brouillon introuvable.")
+        draft = self.draft_for_project(project_id).actions
+        position = next(index for index, item in enumerate(draft) if item.id == action_id)
+        if any(item.job_id == draft[position].job_id for item in draft[position + 1 :]):
+            raise ValueError("Retirez d'abord les étapes suivantes de ce document.")
         action.status = "cancelled"
         action.summary = "Proposition retirée du brouillon, aucun fichier modifié."
         self.storage.save_conversation(conversation)
@@ -710,6 +725,9 @@ class AssistantService:
         )
         if action is None or action.status != "pending_local":
             raise ValueError("Action locale introuvable ou déjà traitée.")
+        draft = self.draft_for_project(project_id).actions
+        if not draft or draft[0].id != action_id:
+            raise ValueError("Appliquez les actions du brouillon dans l'ordre proposé.")
         job_id = action.arguments["job_id"]
         job = self.storage.get_job(UUID(job_id))
         if (
@@ -914,9 +932,15 @@ class AssistantService:
             },
         )
 
-    def _read_document(self, project_id: UUID, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _read_document(
+        self,
+        project_id: UUID,
+        arguments: dict[str, Any],
+        staged_actions: list[AssistantAction] | None = None,
+    ) -> dict[str, Any]:
         needle = str(arguments["document"]).strip().casefold()
         jobs = self.storage.jobs_for_project(project_id)
+        paths, _ = self._virtual_project_paths(project_id, staged_actions)
         matches = [
             job
             for job in jobs
@@ -926,11 +950,14 @@ class AssistantService:
                 job.original_filename.casefold(),
                 Path(job.original_filename).stem.casefold(),
                 (job.source_relative_path or job.original_filename).casefold(),
+                (paths.get(str(job.id)) or "").casefold(),
+                PurePosixPath(paths.get(str(job.id)) or "").name.casefold(),
             }
         ]
         if len(matches) != 1:
             raise ValueError("Document introuvable ou nom ambigu : utilisez son job_id.")
         job = matches[0]
+        virtual_name = PurePosixPath(paths.get(str(job.id)) or job.original_filename).name
         path = self.storage.text_path(job.id)
         if not path.is_file():
             raise ValueError("Texte indisponible : lancez l'analyse/OCR de ce document.")
@@ -941,7 +968,7 @@ class AssistantService:
             return {
                 "ok": True,
                 "job_id": str(job.id),
-                "name": job.original_filename,
+                "name": virtual_name,
                 "text": "",
                 "total_characters": 0,
                 "next_offset": None,
@@ -952,7 +979,7 @@ class AssistantService:
         return {
             "ok": True,
             "job_id": str(job.id),
-            "name": job.original_filename,
+            "name": virtual_name,
             "text": text[offset:end],
             "total_characters": len(text),
             "next_offset": end if end < len(text) else None,
@@ -978,30 +1005,39 @@ class AssistantService:
         self.refresh_memory(project_id)
         return {"ok": True, "summary": f"Document placé dans {destination.relative_to(root)}."}
 
-    def _search_files(self, project_id: UUID, query: str) -> dict[str, Any]:
+    def _search_files(
+        self, project_id: UUID, query: str, staged_actions: list[AssistantAction] | None = None
+    ) -> dict[str, Any]:
         needle = query.casefold().strip()
         files = []
+        paths, _ = self._virtual_project_paths(project_id, staged_actions)
         for job in self.storage.jobs_for_project(project_id):
-            relative = job.source_relative_path or job.original_filename
+            relative = paths.get(str(job.id))
+            if relative is None:
+                continue
             if not needle or needle in relative.casefold():
                 files.append(relative)
             if len(files) >= 50:
                 break
         return {"ok": True, "files": files}
 
-    def _list_documents(self, project_id: UUID) -> dict[str, Any]:
+    def _list_documents(
+        self, project_id: UUID, staged_actions: list[AssistantAction] | None = None
+    ) -> dict[str, Any]:
         try:
             index = self.storage.read_index(project_id)
         except FileNotFoundError:
             index = {"documents": []}
+        paths, _ = self._virtual_project_paths(project_id, staged_actions)
         documents = [
             {
                 "job_id": str(item.get("job_id")),
-                "name": str(item.get("document_name")),
-                "path": str(item.get("source_relative_path")),
+                "name": PurePosixPath(paths[str(item.get("job_id"))]).name,
+                "path": paths[str(item.get("job_id"))],
                 "category": str(item.get("metadata", {}).get("category") or "Autres"),
             }
             for item in index.get("documents", [])
+            if paths.get(str(item.get("job_id")))
         ]
         return {"ok": True, "documents": documents[:500]}
 

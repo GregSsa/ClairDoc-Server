@@ -191,14 +191,39 @@ def test_local_file_action_waits_for_confirmation_then_updates_index(tmp_path: P
             False,
             defer_file_actions=True,
         )
-    with pytest.raises(ValueError, match="déjà dans le brouillon"):
-        service._execute_tool(
-            project_uuid,
-            "move_document",
-            {"job_id": job_id, "destination": "ailleurs.txt"},
-            False,
-            defer_file_actions=True,
-        )
+    _, next_action = service._execute_tool(
+        project_uuid,
+        "move_document",
+        {"job_id": job_id, "destination": "ailleurs/memo.txt"},
+        False,
+        defer_file_actions=True,
+    )
+    assert next_action.source_relative_path == "memo.txt"
+    conversation.messages.append(
+        ConversationMessage(role="assistant", content="Deuxième proposition", actions=[next_action])
+    )
+    storage.save_conversation(conversation)
+    assert [
+        item.source_relative_path for item in service.draft_for_project(project_uuid).actions
+    ] == [
+        "note.txt",
+        "memo.txt",
+    ]
+    listed, _ = service._execute_tool(project_uuid, "list_project_documents", {}, False)
+    assert listed["documents"][0]["path"] == "ailleurs/memo.txt"
+    found, _ = service._execute_tool(
+        project_uuid, "search_project_files", {"query": "ailleurs"}, False
+    )
+    assert found["files"] == ["ailleurs/memo.txt"]
+    read, _ = service._execute_tool(
+        project_uuid, "read_project_document", {"document": "memo.txt"}, False
+    )
+    assert read["name"] == "memo.txt"
+    assert read["text"] == "Contenu du projet"
+    with pytest.raises(ValueError, match="Retirez d'abord"):
+        service.cancel_local_action(project_uuid, conversation.id, action.id)
+    with pytest.raises(ValueError, match="dans l'ordre"):
+        service.complete_local_action(project_uuid, conversation.id, next_action.id)
     (tmp_path / "documents" / "note.txt").rename(tmp_path / "documents" / "memo.txt")
     completed = service.complete_local_action(project_uuid, conversation.id, action.id)
     assert completed.status == "completed"
@@ -210,6 +235,11 @@ def test_local_file_action_waits_for_confirmation_then_updates_index(tmp_path: P
     )
     with pytest.raises(ValueError, match="déjà traitée"):
         service.complete_local_action(project_uuid, conversation.id, action.id)
+    assert len(service.draft_for_project(project_uuid).actions) == 1
+    (tmp_path / "documents" / "ailleurs").mkdir()
+    (tmp_path / "documents" / "memo.txt").rename(tmp_path / "documents" / "ailleurs" / "memo.txt")
+    service.complete_local_action(project_uuid, conversation.id, next_action.id)
+    assert storage.get_job(UUID(job_id)).source_relative_path == "ailleurs/memo.txt"
     assert service.draft_for_project(project_uuid).actions == []
 
 
@@ -233,6 +263,82 @@ def test_draft_action_can_be_cancelled_without_touching_file(tmp_path: Path) -> 
     assert cancelled.status == "cancelled"
     assert service.draft_for_project(project_uuid).actions == []
     assert (tmp_path / "documents" / "note.txt").is_file()
+
+
+def test_multiple_actions_on_same_file_can_be_staged_in_one_reply(tmp_path: Path) -> None:
+    storage, service, project_id, job_id = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    _, rename = service._execute_tool(
+        project_uuid,
+        "rename_document",
+        {"job_id": job_id, "new_name": "memo.txt"},
+        False,
+        defer_file_actions=True,
+    )
+    _, move = service._execute_tool(
+        project_uuid,
+        "move_document",
+        {"job_id": job_id, "destination": "archives/memo.txt"},
+        False,
+        defer_file_actions=True,
+        staged_actions=[rename],
+    )
+    _, copy = service._execute_tool(
+        project_uuid,
+        "copy_document",
+        {"job_id": job_id, "destination": "copies/memo.txt"},
+        False,
+        defer_file_actions=True,
+        staged_actions=[rename, move],
+    )
+    assert [item.source_relative_path for item in (rename, move, copy)] == [
+        "note.txt",
+        "memo.txt",
+        "archives/memo.txt",
+    ]
+    assert (tmp_path / "documents" / "note.txt").is_file()
+    with pytest.raises(ValueError, match="déjà utilisée"):
+        service._execute_tool(
+            project_uuid,
+            "copy_document",
+            {"job_id": job_id, "destination": "copies/memo.txt"},
+            False,
+            defer_file_actions=True,
+            staged_actions=[rename, move, copy],
+        )
+    conversation = storage.create_conversation(project_uuid, "Chaîne")
+    conversation.messages.append(
+        ConversationMessage(role="assistant", content="Trois étapes", actions=[rename, move, copy])
+    )
+    storage.save_conversation(conversation)
+    assert len(service.draft_for_project(project_uuid).actions) == 3
+    with pytest.raises(ValueError, match="Retirez d'abord"):
+        service.cancel_local_action(project_uuid, conversation.id, rename.id)
+    service.cancel_local_action(project_uuid, conversation.id, copy.id)
+    service.cancel_local_action(project_uuid, conversation.id, move.id)
+    service.cancel_local_action(project_uuid, conversation.id, rename.id)
+    assert service.draft_for_project(project_uuid).actions == []
+
+
+def test_deleted_file_cannot_be_modified_again_before_validation(tmp_path: Path) -> None:
+    _, service, project_id, job_id = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    _, deletion = service._execute_tool(
+        project_uuid,
+        "delete_document",
+        {"job_id": job_id},
+        False,
+        defer_file_actions=True,
+    )
+    with pytest.raises(ValueError, match="corbeille"):
+        service._execute_tool(
+            project_uuid,
+            "rename_document",
+            {"job_id": job_id, "new_name": "memo.txt"},
+            False,
+            defer_file_actions=True,
+            staged_actions=[deletion],
+        )
 
 
 def test_local_move_can_finish_before_project_is_indexed(tmp_path: Path) -> None:
