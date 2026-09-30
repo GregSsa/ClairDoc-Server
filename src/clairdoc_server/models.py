@@ -102,6 +102,7 @@ class RuntimeUpdate(BaseModel):
 
 
 class OrganizationOptions(BaseModel):
+    names_only: bool = False
     rename_files: bool = False
     normalize_dates: bool = True
     organize: bool = True
@@ -146,6 +147,7 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=3, max_length=4000)
     top_k: int | None = Field(default=None, ge=1, le=20)
     allow_write_actions: bool = False
+    names_only: bool = False
 
 
 class DocumentSearchRequest(BaseModel):

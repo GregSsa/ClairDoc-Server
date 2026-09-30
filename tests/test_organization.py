@@ -94,3 +94,32 @@ def test_plan_keeps_failed_imports_visible_for_review(tmp_path: Path) -> None:
     assert len(plan.entries) == 1
     assert plan.entries[0].original_filename == "scan001.pdf"
     assert "À vérifier" in plan.entries[0].reason
+
+
+def test_names_only_plan_ignores_content_metadata(tmp_path: Path) -> None:
+    storage = LocalStorage(tmp_path / "data")
+    storage.initialize()
+    project = storage.create_project(ProjectCreate(name="Archives"))
+    storage.write_index(project.id, {"documents": [{
+        "job_id": "d6c7963e-88ad-4458-8971-fc778ed67d39",
+        "document_name": "Facture_14-03-2026.pdf",
+        "source_relative_path": "À trier/Facture_14-03-2026.pdf",
+        "metadata": {
+            "category": "Secret issu du contenu",
+            "date": "1999-01-01",
+            "organization": "Organisation issue du contenu",
+        },
+        "indexing_mode": "content",
+        "chunks": [{"text": "Contenu qui ne doit pas être utilisé"}],
+    }]})
+
+    plan = OrganizationService(storage).build_plan(
+        project.id, rename_files=True, names_only=True
+    )
+
+    entry = plan.entries[0]
+    assert entry.category == "Factures"
+    assert entry.document_date == "2026-03-14"
+    assert entry.organization is None
+    assert "Secret" not in entry.suggested_path
+    assert "uniquement sur le nom" in entry.reason

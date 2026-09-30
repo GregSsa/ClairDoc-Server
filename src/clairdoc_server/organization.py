@@ -2,6 +2,7 @@ import json
 import re
 import unicodedata
 from collections import Counter
+from contextlib import suppress
 from datetime import date
 from pathlib import Path, PurePosixPath
 from uuid import UUID
@@ -42,6 +43,45 @@ def _ambiguous_filename(stem: str) -> bool:
     numbered = re.fullmatch(r"(?:scan|img|image|doc|document|photo|e)?[-_ ]*\d+", stem, re.I)
     return bool(numbered) or stem.casefold() in {
         "scan", "document", "image", "photo", "sans titre"
+    }
+
+
+def _filename_metadata(path: str) -> dict[str, str | None]:
+    """Infer only conservative sorting hints from a file name and its parent path."""
+    visible = PurePosixPath(path.replace("\\", "/"))
+    stem = visible.stem
+    words = f"{' '.join(visible.parts[:-1])} {stem}".casefold()
+    categories = (
+        ("Factures", ("facture", "invoice", "devis", "reçu", "recu")),
+        ("Impôts", ("impôt", "impot", "fiscal", "taxe fonci", "déclaration")),
+        ("Banque", ("banque", "relevé", "releve", "rib", "crédit", "credit")),
+        ("Assurances", ("assurance", "sinistre", "attestation", "mutuelle")),
+        ("Contrats", ("contrat", "convention", "bail", "abonnement")),
+        ("Courriers", ("courrier", "lettre", "mail", "réponse", "reponse")),
+        ("Santé", ("santé", "sante", "médical", "medical", "ordonnance")),
+    )
+    category = next(
+        (label for label, needles in categories if any(needle in words for needle in needles)),
+        "À vérifier",
+    )
+    date_match = re.search(
+        r"(?<!\d)(?:(\d{4})[-_. ](\d{1,2})[-_. ](\d{1,2})|"
+        r"(\d{1,2})[-_. ](\d{1,2})[-_. ](\d{4}))(?!\d)",
+        stem,
+    )
+    document_date: str | None = None
+    if date_match:
+        if date_match.group(1):
+            year, month, day = map(int, date_match.group(1, 2, 3))
+        else:
+            day, month, year = map(int, date_match.group(4, 5, 6))
+        with suppress(ValueError):
+            document_date = date(year, month, day).isoformat()
+    return {
+        "category": category,
+        "document_type": category.rstrip("s") if category != "À vérifier" else None,
+        "date": document_date,
+        "organization": None,
     }
 
 
@@ -136,6 +176,7 @@ class OrganizationService:
         organize: bool = True,
         max_depth: int | None = 2,
         max_children: int | None = None,
+        names_only: bool = False,
     ) -> OrganizationPlan:
         if max_depth is not None and max_depth < 1:
             raise ValueError("La profondeur maximale doit être au moins 1.")
@@ -144,6 +185,17 @@ class OrganizationService:
         self.storage.get_project(project_id)
         index = self.storage.read_index(project_id)
         documents = list(index.get("documents", []))
+        if names_only:
+            documents = [
+                {
+                    **document,
+                    "metadata": _filename_metadata(
+                        str(document.get("source_relative_path") or document["document_name"])
+                    ),
+                    "indexing_mode": "name_only",
+                }
+                for document in documents
+            ]
         indexed_ids = {str(item.get("job_id")) for item in documents}
         for job in self.storage.jobs_for_project(project_id):
             if str(job.id) in indexed_ids or job.status not in {
@@ -227,8 +279,8 @@ class OrganizationService:
                     document_date=document_date,
                     organization=organization,
                     reason=(
-                        "À vérifier : contenu non indexé, classement basé sur le nom."
-                        if document.get("indexing_mode") == "name_only"
+                        "À vérifier : classement basé uniquement sur le nom et le chemin."
+                        if names_only or document.get("indexing_mode") == "name_only"
                         else f"Classé dans {category} à partir du contenu détecté."
                     ),
                 )

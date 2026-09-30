@@ -255,6 +255,12 @@ TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+CONTENT_READING_TOOLS = {
+    "search_project_documents",
+    "read_project_document",
+    "read_project_text_file",
+}
+
 
 class AssistantService:
     def __init__(self, storage: LocalStorage, rag: Any) -> None:
@@ -268,6 +274,7 @@ class AssistantService:
         question: str,
         top_k: int | None,
         allow_write_actions: bool,
+        names_only: bool = False,
     ) -> AskResponse:
         project = self.storage.get_project(project_id)
         conversation = self.storage.get_conversation(project_id, conversation_id)
@@ -277,25 +284,38 @@ class AssistantService:
             self.refresh_memory(project_id)
             memory = self.storage.read_project_memory(project_id).content
         memory_context = memory.split("\n## Documents\n")[0][:12000]
-        transcript = [
+        transcript = [] if names_only else [
             {"role": message.role, "content": message.content}
             for message in conversation.messages[-20:]
         ]
         transcript.append({"role": "user", "content": question})
+        access_rule = (
+            "MODE ÉCONOMIQUE STRICT ACTIF : utilise exclusivement les noms de fichiers et "
+            "leurs chemins. Ne recherche et ne lis aucun contenu, extrait, OCR, résumé ou "
+            "métadonnée issue du contenu. Si un nom est ambigu, conserve-le et signale-le."
+            if names_only
+            else "Consulte le contenu seulement lorsque la demande le nécessite."
+        )
         instructions = (
             f"{ASSISTANT_INSTRUCTIONS}\n\nProjet : {project.name}\n"
             f"Mémoire projet :\n{memory_context}\n\n"
+            f"{access_rule}\n"
             f"Modifications des métadonnées autorisées pour ce tour : {allow_write_actions}. "
             "Les actions sur les fichiers locaux sont uniquement préparées ici et exigent "
             "une validation distincte dans l'application avant leur exécution."
         )
         client = self.rag._client()
         model = self.storage.get_llm_model(self.rag.settings.llm_model)
+        active_tools = [
+            tool
+            for tool in TOOLS
+            if not names_only or tool.get("name") not in CONTENT_READING_TOOLS
+        ]
         response = await client.responses.create(
             model=model,
             instructions=instructions,
             input=transcript,
-            tools=TOOLS,
+            tools=active_tools,
             store=False,
         )
         running_input: list[Any] = list(transcript)
@@ -308,6 +328,8 @@ class AssistantService:
             for call in calls:
                 try:
                     arguments = json.loads(call.arguments)
+                    if names_only and call.name in CONTENT_READING_TOOLS:
+                        raise ValueError("Lecture du contenu désactivée par le mode économique.")
                     if call.name == "search_project_documents":
                         result, action = await self._search_documents_tool(
                             project_id, arguments, citations, top_k
@@ -378,7 +400,7 @@ class AssistantService:
                 model=model,
                 instructions=instructions,
                 input=running_input,
-                tools=TOOLS,
+                tools=active_tools,
                 store=False,
             )
 

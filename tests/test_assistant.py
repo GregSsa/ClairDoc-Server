@@ -404,6 +404,44 @@ def test_assistant_does_not_load_document_content_before_tool_call(
     assert "Contenu du projet" not in calls[0]["instructions"]
 
 
+def test_names_only_assistant_hides_content_tools_and_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage, service, project_id, _ = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    conversation = storage.create_conversation(project_uuid, "Nettoyage")
+    conversation.messages.append(
+        ConversationMessage(role="assistant", content="Ancien contenu confidentiel")
+    )
+    storage.save_conversation(conversation)
+    calls: list[dict[str, object]] = []
+
+    class Responses:
+        async def create(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(output=[], output_text="Classement par noms uniquement.")
+
+    monkeypatch.setattr(service.rag, "_client", lambda: SimpleNamespace(responses=Responses()))
+    answer = run(
+        service.ask(
+            project_uuid,
+            conversation.id,
+            "Trie les fichiers",
+            None,
+            True,
+            names_only=True,
+        )
+    )
+
+    assert answer.answer == "Classement par noms uniquement."
+    assert calls[0]["input"] == [{"role": "user", "content": "Trie les fichiers"}]
+    tool_names = {tool["name"] for tool in calls[0]["tools"]}
+    assert not tool_names.intersection(
+        {"search_project_documents", "read_project_document", "read_project_text_file"}
+    )
+    assert "Ancien contenu confidentiel" not in str(calls[0])
+
+
 def test_assistant_can_stage_then_request_global_validation_in_one_reply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -381,6 +381,7 @@ async def ask_project(request: Request, project_id: UUID, payload: AskRequest) -
             payload.question.strip(),
             payload.top_k,
             payload.allow_write_actions,
+            payload.names_only,
         )
     except RecordNotFoundError as exc:
         raise _not_found("Projet") from exc
@@ -468,6 +469,7 @@ async def send_conversation_message(
             payload.question.strip(),
             payload.top_k,
             payload.allow_write_actions,
+            payload.names_only,
         )
     except RecordNotFoundError as exc:
         raise _not_found("Conversation") from exc
@@ -538,7 +540,7 @@ async def create_organization_plan(
     try:
         names = (
             await request.app.state.organization.suggest_names(project_id, request.app.state.rag)
-            if payload.rename_files
+            if payload.rename_files and not payload.names_only
             else None
         )
         return request.app.state.organization.build_plan(
@@ -549,6 +551,7 @@ async def create_organization_plan(
             organize=payload.organize,
             max_depth=payload.max_depth,
             max_children=payload.max_children,
+            names_only=payload.names_only,
         )
     except RecordNotFoundError as exc:
         raise HTTPException(
