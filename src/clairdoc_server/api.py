@@ -382,6 +382,10 @@ async def ask_project(request: Request, project_id: UUID, payload: AskRequest) -
             payload.top_k,
             payload.allow_write_actions,
             payload.names_only,
+            payload.allow_rename_actions,
+            payload.allow_move_actions,
+            payload.allow_delete_actions,
+            payload.include_project_tree,
         )
     except RecordNotFoundError as exc:
         raise _not_found("Projet") from exc
@@ -470,6 +474,10 @@ async def send_conversation_message(
             payload.top_k,
             payload.allow_write_actions,
             payload.names_only,
+            payload.allow_rename_actions,
+            payload.allow_move_actions,
+            payload.allow_delete_actions,
+            payload.include_project_tree,
         )
     except RecordNotFoundError as exc:
         raise _not_found("Conversation") from exc

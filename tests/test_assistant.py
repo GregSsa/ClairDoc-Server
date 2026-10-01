@@ -442,6 +442,42 @@ def test_names_only_assistant_hides_content_tools_and_history(
     assert "Ancien contenu confidentiel" not in str(calls[0])
 
 
+def test_assistant_settings_filter_file_tools_and_add_project_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage, service, project_id, _ = make_service(tmp_path)
+    project_uuid = UUID(project_id)
+    conversation = storage.create_conversation(project_uuid, "Réglages")
+    calls: list[dict[str, object]] = []
+
+    class Responses:
+        async def create(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(output=[], output_text="Réglages appliqués.")
+
+    monkeypatch.setattr(service.rag, "_client", lambda: SimpleNamespace(responses=Responses()))
+    answer = run(
+        service.ask(
+            project_uuid,
+            conversation.id,
+            "Montre les options",
+            None,
+            False,
+            allow_rename_actions=False,
+            allow_move_actions=False,
+            allow_delete_actions=False,
+            include_project_tree=True,
+        )
+    )
+
+    assert answer.answer == "Réglages appliqués."
+    tool_names = {tool["name"] for tool in calls[0]["tools"]}
+    assert not tool_names.intersection(
+        {"rename_document", "move_document", "copy_document", "delete_document"}
+    )
+    assert "Arborescence actuelle du projet" in str(calls[0]["instructions"])
+
+
 def test_assistant_can_stage_then_request_global_validation_in_one_reply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

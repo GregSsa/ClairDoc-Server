@@ -261,6 +261,31 @@ CONTENT_READING_TOOLS = {
     "read_project_text_file",
 }
 
+RENAME_TOOLS = {"rename_document"}
+MOVE_TOOLS = {"move_document", "copy_document"}
+DELETE_TOOLS = {"delete_document"}
+
+
+def _compact_project_tree(storage: LocalStorage, project_id: UUID) -> str:
+    paths = sorted(
+        {
+            job.source_relative_path.replace("\\", "/").strip("/")
+            for job in storage.jobs_for_project(project_id)
+            if job.source_relative_path and not job.source_relative_path.startswith(".clairdoc/")
+        },
+        key=str.casefold,
+    )
+    lines = [f"./ — {len(paths)} document(s)"]
+    length = len(lines[0])
+    for index, path in enumerate(paths):
+        line = f"{'└─' if index + 1 == len(paths) else '├─'} {path}"
+        if length + len(line) + 1 > 8_000:
+            lines.append("[… arborescence tronquée : poursuivre avec l’inventaire paginé.]")
+            break
+        lines.append(line)
+        length += len(line) + 1
+    return "\n".join(lines)
+
 
 class AssistantService:
     def __init__(self, storage: LocalStorage, rag: Any) -> None:
@@ -275,6 +300,10 @@ class AssistantService:
         top_k: int | None,
         allow_write_actions: bool,
         names_only: bool = False,
+        allow_rename_actions: bool = True,
+        allow_move_actions: bool = True,
+        allow_delete_actions: bool = True,
+        include_project_tree: bool = True,
     ) -> AskResponse:
         project = self.storage.get_project(project_id)
         conversation = self.storage.get_conversation(project_id, conversation_id)
@@ -296,11 +325,21 @@ class AssistantService:
             if names_only
             else "Consulte le contenu seulement lorsque la demande le nécessite."
         )
+        project_tree = (
+            "\n\nArborescence actuelle du projet :\n"
+            f"{_compact_project_tree(self.storage, project_id)}"
+            if include_project_tree
+            else ""
+        )
         instructions = (
             f"{ASSISTANT_INSTRUCTIONS}\n\nProjet : {project.name}\n"
             f"Mémoire projet :\n{memory_context}\n\n"
+            f"{project_tree}\n"
             f"{access_rule}\n"
             f"Modifications des métadonnées autorisées pour ce tour : {allow_write_actions}. "
+            f"Renommage autorisé : {allow_rename_actions}. "
+            f"Déplacement ou copie autorisé : {allow_move_actions}. "
+            f"Suppression autorisée : {allow_delete_actions}. "
             "Les actions sur les fichiers locaux sont uniquement préparées ici et exigent "
             "une validation distincte dans l'application avant leur exécution."
         )
@@ -309,7 +348,10 @@ class AssistantService:
         active_tools = [
             tool
             for tool in TOOLS
-            if not names_only or tool.get("name") not in CONTENT_READING_TOOLS
+            if (not names_only or tool.get("name") not in CONTENT_READING_TOOLS)
+            and (allow_rename_actions or tool.get("name") not in RENAME_TOOLS)
+            and (allow_move_actions or tool.get("name") not in MOVE_TOOLS)
+            and (allow_delete_actions or tool.get("name") not in DELETE_TOOLS)
         ]
         response = await client.responses.create(
             model=model,

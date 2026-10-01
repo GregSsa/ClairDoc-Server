@@ -144,10 +144,14 @@ class IndexTask(BaseModel):
 
 
 class AskRequest(BaseModel):
-    question: str = Field(min_length=3, max_length=4000)
+    question: str = Field(min_length=3)
     top_k: int | None = Field(default=None, ge=1, le=20)
     allow_write_actions: bool = False
     names_only: bool = False
+    allow_rename_actions: bool = True
+    allow_move_actions: bool = True
+    allow_delete_actions: bool = True
+    include_project_tree: bool = True
 
 
 class DocumentSearchRequest(BaseModel):
